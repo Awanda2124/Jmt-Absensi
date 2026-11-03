@@ -1,3 +1,14 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="theme-color" content="#ffffff">
+  <title>Absensi Karyawan</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 
   <script src="https://cdn.tailwindcss.com"></script>
@@ -26,3 +37,1818 @@
       },
     };
   </script>
+</head>
+<body class="bg-slate-50 font-sans text-slate-900 antialiased">
+  <div id="app" class="min-h-[100dvh]">
+    <div class="flex min-h-[100dvh] items-center justify-center bg-gradient-to-br from-indigo-50/60 via-white to-slate-50">
+      <div class="flex flex-col items-center gap-3 text-sm text-slate-400">
+        <svg class="size-8 animate-spin text-indigo-600" viewBox="0 0 24 24" fill="none">
+          <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-opacity=".2" stroke-width="3"/>
+          <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+        </svg>
+        <span>Memuat…</span>
+      </div>
+    </div>
+  </div>
+  <noscript>Aplikasi ini membutuhkan JavaScript.</noscript>
+
+<script type="module">
+/* ==========================================================================
+   ABSENSI KARYAWAN - frontend satu file
+   Backend: Supabase (Postgres + RLS + Edge Function admin-users)
+   ========================================================================== */
+
+/* ============================== 1. CONFIG ============================== */
+const SUPABASE_URL = 'https://hxvfeipzeodutttkpgmz.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_jLBI24ErJfOt-2OpjotNhA_CBq6-roR';
+
+let supabase = null;
+
+/* ============================ 2. UI HELPERS ============================ */
+const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ESC_MAP[c]);
+
+const TOAST_TONE = {
+  info: { cls: 'bg-slate-900 text-white', icon: 'check' },
+  success: { cls: 'bg-emerald-600 text-white', icon: 'check' },
+  error: { cls: 'bg-red-600 text-white', icon: 'alert' },
+};
+let toastHost;
+function toast(message, type = 'info') {
+  if (!toastHost) {
+    toastHost = document.createElement('div');
+    toastHost.className = 'pointer-events-none fixed inset-x-0 top-3 z-50 flex flex-col items-center gap-2 px-4';
+    toastHost.setAttribute('role', 'status');
+    toastHost.setAttribute('aria-live', 'polite');
+    document.body.appendChild(toastHost);
+  }
+  const tone = TOAST_TONE[type] ?? TOAST_TONE.info;
+  const el = document.createElement('div');
+  el.className = `pointer-events-auto flex max-w-sm items-center gap-2 rounded-xl px-4 py-3 text-sm font-medium shadow-soft-lg animate-toast-in ${tone.cls}`;
+  el.innerHTML = `<span class="shrink-0">${icon(tone.icon, 'size-5')}</span><span>${esc(message)}</span>`;
+  toastHost.appendChild(el);
+  setTimeout(() => {
+    el.style.transition = 'opacity .2s, transform .2s';
+    el.style.opacity = '0';
+    el.style.transform = 'translateY(-6px)';
+    setTimeout(() => el.remove(), 200);
+  }, 3300);
+}
+
+const CARD = 'w-full max-w-sm rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-soft-lg';
+const BTN_PRIMARY =
+  'inline-flex items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm shadow-indigo-600/20 transition hover:bg-indigo-700 hover:shadow-md hover:shadow-indigo-600/30 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60';
+const BTN_GHOST =
+  'inline-flex items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 shadow-sm transition hover:border-slate-400 hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60';
+const BTN_DANGER =
+  'inline-flex items-center justify-center gap-2 rounded-xl bg-red-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm shadow-red-600/20 transition hover:bg-red-700 hover:shadow-md hover:shadow-red-600/30 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60';
+const BTN_SM =
+  'inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm transition hover:border-slate-400 hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50';
+const INPUT =
+  'block w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 placeholder-slate-400 shadow-sm transition focus:border-indigo-500 focus:outline-none focus:ring-4 focus:ring-indigo-500/10';
+
+function openModal({ title, content, onMount, onClose }) {
+  const prevFocus = document.activeElement;
+  const host = document.createElement('div');
+  host.className = 'fixed inset-0 z-40 flex items-end justify-center bg-slate-900/50 backdrop-blur-sm animate-fade-in sm:items-center sm:p-4';
+  host.innerHTML = `
+    <div role="dialog" aria-modal="true" aria-labelledby="modal-title"
+         class="w-full max-w-md rounded-t-3xl bg-white shadow-2xl animate-slide-up sm:rounded-2xl">
+      <div class="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+        <h2 id="modal-title" class="text-base font-semibold tracking-tight text-slate-900">${esc(title)}</h2>
+        <button type="button" data-close aria-label="Tutup"
+                class="rounded-lg p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500">
+          ${icon('x', 'size-5')}
+        </button>
+      </div>
+      <div data-body class="max-h-[80dvh] overflow-y-auto px-5 py-4 pb-[max(1rem,env(safe-area-inset-bottom))]">${content}</div>
+    </div>`;
+  document.body.appendChild(host);
+  document.body.classList.add('overflow-hidden');
+
+  let closed = false;
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  function close() {
+    if (closed) return;
+    closed = true;
+    document.removeEventListener('keydown', onKey);
+    host.remove();
+    document.body.classList.remove('overflow-hidden');
+    if (prevFocus && typeof prevFocus.focus === 'function') prevFocus.focus();
+    if (onClose) onClose();
+  }
+  document.addEventListener('keydown', onKey);
+  host.addEventListener('mousedown', (e) => { if (e.target === host) close(); });
+  host.querySelector('[data-close]').addEventListener('click', close);
+
+  const body = host.querySelector('[data-body]');
+  if (onMount) onMount(body, close);
+  const first = body.querySelector('input, button, select, textarea');
+  if (first) first.focus();
+  return close;
+}
+
+function confirmDialog({ title, message, confirmLabel = 'Ya', danger = false }) {
+  return new Promise((resolve) => {
+    let decided = false;
+    openModal({
+      title,
+      content: `
+        <p class="text-sm text-slate-600">${esc(message)}</p>
+        <div class="mt-5 flex gap-2">
+          <button type="button" data-no class="${BTN_GHOST} flex-1">Batal</button>
+          <button type="button" data-yes class="${danger ? BTN_DANGER : BTN_PRIMARY} flex-1">${esc(confirmLabel)}</button>
+        </div>`,
+      onMount: (body, close) => {
+        body.querySelector('[data-no]').addEventListener('click', close);
+        body.querySelector('[data-yes]').addEventListener('click', () => {
+          decided = true;
+          resolve(true);
+          close();
+        });
+      },
+      onClose: () => { if (!decided) resolve(false); },
+    });
+  });
+}
+
+function showFatal(root, title, detail) {
+  root.innerHTML = `
+    <div class="flex min-h-[100dvh] items-center justify-center bg-gradient-to-br from-indigo-50/60 via-white to-slate-50 px-4">
+      <div class="${CARD}">
+        <div class="mx-auto mb-4 flex size-12 items-center justify-center rounded-2xl bg-red-50 text-red-600">
+          ${icon('alert', 'size-6')}
+        </div>
+        <h1 class="text-base font-semibold tracking-tight text-slate-900">${esc(title)}</h1>
+        <p class="mt-2 text-sm text-slate-500">${esc(detail)}</p>
+      </div>
+    </div>`;
+}
+
+function showError(root, { message, onRetry, onLogout }) {
+  root.innerHTML = `
+    <div class="flex min-h-[100dvh] items-center justify-center bg-gradient-to-br from-indigo-50/60 via-white to-slate-50 px-4">
+      <div class="${CARD}">
+        <div class="mx-auto mb-4 flex size-12 items-center justify-center rounded-2xl bg-amber-50 text-amber-600">
+          ${icon('alert', 'size-6')}
+        </div>
+        <h1 class="text-base font-semibold tracking-tight text-slate-900">Terjadi masalah</h1>
+        <p class="mt-2 text-sm text-slate-500">${esc(message)}</p>
+        <div class="mt-5 flex justify-center gap-2">
+          <button type="button" data-act="retry" class="${BTN_PRIMARY}">${icon('refresh','size-4')} Coba lagi</button>
+          <button type="button" data-act="logout" class="${BTN_GHOST}">Keluar</button>
+        </div>
+      </div>
+    </div>`;
+  root.querySelector('[data-act="retry"]').addEventListener('click', onRetry);
+  root.querySelector('[data-act="logout"]').addEventListener('click', onLogout);
+}
+
+/* =============================== 3. ICONS =============================== */
+const ICON_PATHS = {
+  check: '<path d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/>',
+  user: '<path d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.5 20.12a7.5 7.5 0 0 1 15 0A17.93 17.93 0 0 1 12 21.75c-2.68 0-5.22-.58-7.5-1.63Z"/>',
+  users: '<circle cx="9" cy="8" r="3.25"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><path d="M16 5.2a3.25 3.25 0 0 1 0 5.6M18 14.3c1.8.8 3 2.6 3 4.7"/>',
+  grid: '<rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"/>',
+  chart: '<path d="M3 3v18h18"/><path d="M8 17v-5M12.5 17V8M17 17v-8"/>',
+  x: '<path d="M6 6l12 12M18 6 6 18"/>',
+  'chevron-left': '<path d="M15 6l-6 6 6 6"/>',
+  'chevron-right': '<path d="M9 6l6 6-6 6"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/>',
+  sliders: '<path d="M4 6h8M16 6h4M4 12h2M10 12h10M4 18h10M18 18h2"/><circle cx="14" cy="6" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="16" cy="18" r="2"/>',
+  calendar: '<rect x="3.5" y="5" width="17" height="15.5" rx="2"/><path d="M8 3v4M16 3v4M3.5 10h17"/>',
+  logout: '<path d="M15.75 9V5.25A2.25 2.25 0 0 0 13.5 3h-6a2.25 2.25 0 0 0-2.25 2.25v13.5A2.25 2.25 0 0 0 7.5 21h6a2.25 2.25 0 0 0 2.25-2.25V15m3 0 3-3m0 0-3-3m3 3H9"/>',
+  eye: '<path d="M2.5 12s3.5-6.5 9.5-6.5S21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="3"/>',
+  'eye-off': '<path d="M2.5 12s3.5-6.5 9.5-6.5S21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="3"/><path d="M4 4l16 16"/>',
+  alert: '<path d="M12 9v4m0 4h.01M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/>',
+  refresh: '<path d="M3 12a9 9 0 0 1 15.5-6.3L21 8M21 3v5h-5M21 12a9 9 0 0 1-15.5 6.3L3 16M3 21v-5h5"/>',
+  building: '<path d="M3 21h18M5 21V7l8-4v18M19 21V11l-6-4"/><path d="M9 9v.01M9 12v.01M9 15v.01M9 18v.01"/>',
+  sparkle: '<path d="m12 3 1.9 5.8L20 10.5l-5.1 3.7L14 20l-2-5.8L7 10.5l5.1-1.7z"/>',
+};
+function icon(name, cls = 'size-6') {
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="${cls}">${ICON_PATHS[name] ?? ''}</svg>`;
+}
+
+/* =============================== 4. AUTH =============================== */
+function signIn(email, password) {
+  return supabase.auth.signInWithPassword({ email, password });
+}
+
+async function signOut() {
+  await supabase.auth.signOut();
+}
+
+async function callAdminFn(body) {
+  const { data, error } = await supabase.functions.invoke('admin-users', { body });
+  if (error) {
+    let msg = 'Gagal menghubungi server.';
+    if (error.name === 'FunctionsFetchError') {
+      msg = 'Tidak bisa terhubung ke server. Periksa koneksi internet.';
+    } else {
+      try {
+        const res = error.context;
+        if (res && typeof res.json === 'function') {
+          const j = await res.json();
+          if (j && j.error) msg = String(j.error);
+        }
+      } catch { /* pakai pesan default */ }
+    }
+    throw new Error(msg);
+  }
+  return data;
+}
+
+async function loadSession() {
+  const { data, error: sessionError } = await supabase.auth.getSession();
+  if (sessionError) throw sessionError;
+  const session = data.session;
+  if (!session) return { session: null, profile: null };
+
+  const { data: profile, error } = await supabase
+    .from('profiles')
+    .select('id, full_name, role, is_active')
+    .eq('id', session.user.id)
+    .maybeSingle();
+  if (error) throw error;
+
+  return { session, profile };
+}
+
+/* ============================== 5. ROUTER ============================== */
+let onHashChange = null;
+
+function stopRouter() {
+  if (onHashChange) window.removeEventListener('hashchange', onHashChange);
+  onHashChange = null;
+}
+
+function startRouter({ items, ctx, view, onNavigate }) {
+  stopRouter();
+
+  async function resolve() {
+    const path = location.hash.replace(/^#/, '');
+    const item = items.find((i) => i.path === path);
+    if (!item) {
+      location.replace(`#${items[0].path}`);
+      return;
+    }
+    onNavigate(item);
+    view.replaceChildren();
+    try {
+      await item.render(view, ctx);
+    } catch (e) {
+      console.error(e);
+      view.innerHTML =
+        '<div class="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">Halaman gagal dimuat. Coba muat ulang.</div>';
+    }
+    window.scrollTo(0, 0);
+  }
+
+  onHashChange = resolve;
+  window.addEventListener('hashchange', onHashChange);
+  resolve();
+}
+
+/* ============================== 6. HALAMAN ============================== */
+
+function stubPage(title, description) {
+  return async (view) => {
+    view.innerHTML = `
+      <div class="mx-auto max-w-3xl">
+        <div class="rounded-2xl border-2 border-dashed border-slate-200 bg-white/60 p-10 text-center">
+          <div class="mx-auto mb-3 flex size-14 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-600">
+            ${icon('sparkle', 'size-7')}
+          </div>
+          <p class="text-sm font-semibold text-slate-900">${esc(title)}</p>
+          <p class="mt-1 text-sm text-slate-500">${esc(description)}</p>
+          <p class="mt-3 inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-500">
+            <span class="size-1.5 animate-pulse rounded-full bg-indigo-500"></span>
+            Dalam pengembangan
+          </p>
+        </div>
+      </div>`;
+  };
+}
+
+function friendlyLoginError(error) {
+  const msg = String(error?.message ?? '');
+  if (error?.status === 429) return 'Terlalu banyak percobaan. Coba lagi beberapa menit lagi.';
+  if (/invalid login credentials/i.test(msg)) return 'Email atau password salah.';
+  if (/email not confirmed/i.test(msg)) return 'Email belum dikonfirmasi. Hubungi super admin.';
+  if (error?.name === 'AuthRetryableFetchError' || /failed to fetch|network/i.test(msg)) {
+    return 'Tidak bisa terhubung ke server. Periksa koneksi internet.';
+  }
+  return 'Gagal masuk. Coba lagi.';
+}
+
+function renderLogin(root, { notice = '', onLoggedIn }) {
+  root.innerHTML = `
+    <div class="relative flex min-h-[100dvh] items-center justify-center overflow-hidden bg-gradient-to-br from-indigo-100 via-slate-50 to-white px-4 py-10">
+      <div class="pointer-events-none absolute -top-32 -left-32 size-96 rounded-full bg-indigo-200/40 blur-3xl"></div>
+      <div class="pointer-events-none absolute -bottom-32 -right-32 size-96 rounded-full bg-violet-200/40 blur-3xl"></div>
+
+      <div class="relative w-full max-w-sm">
+        <div class="mb-8 text-center">
+          <div class="mx-auto mb-5 flex size-14 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-600 text-white shadow-lg shadow-indigo-600/30">
+            ${icon('check', 'size-7')}
+          </div>
+          <h1 class="text-2xl font-bold tracking-tight text-slate-900">Absensi Karyawan</h1>
+          <p class="mt-1.5 text-sm text-slate-500">Masuk untuk melanjutkan</p>
+        </div>
+
+        <form id="login-form" novalidate class="space-y-4 rounded-2xl border border-slate-200/80 bg-white/90 p-6 shadow-soft-lg backdrop-blur">
+          ${notice ? `<p class="rounded-xl bg-amber-50 px-3 py-2.5 text-sm text-amber-800">${esc(notice)}</p>` : ''}
+
+          <div>
+            <label for="email" class="mb-1.5 block text-sm font-medium text-slate-700">Email</label>
+            <input id="email" name="email" type="email" inputmode="email" autocomplete="username"
+                   autocapitalize="none" spellcheck="false" required placeholder="nama@perusahaan.com" class="${INPUT}">
+          </div>
+
+          <div>
+            <label for="password" class="mb-1.5 block text-sm font-medium text-slate-700">Password</label>
+            <div class="relative">
+              <input id="password" name="password" type="password" autocomplete="current-password"
+                     required placeholder="Password" class="${INPUT} pr-11">
+              <button type="button" id="toggle-pw" aria-label="Tampilkan password"
+                      class="absolute inset-y-0 right-0 flex w-11 items-center justify-center rounded-r-xl text-slate-400 transition hover:text-slate-600 focus:outline-none focus-visible:text-indigo-600">
+                <span data-eye>${icon('eye', 'size-5')}</span>
+              </button>
+            </div>
+          </div>
+
+          <p id="login-error" role="alert" class="hidden rounded-xl bg-red-50 px-3 py-2 text-sm text-red-700"></p>
+
+          <button type="submit" id="login-submit"
+                  class="flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm shadow-indigo-600/20 transition hover:bg-indigo-700 hover:shadow-md hover:shadow-indigo-600/30 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60">
+            <svg id="login-spinner" class="hidden size-4 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-opacity=".3" stroke-width="3"/>
+              <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+            </svg>
+            <span id="login-label">Masuk</span>
+          </button>
+        </form>
+
+        <p class="mt-6 text-center text-xs text-slate-400">Lupa password? Hubungi super admin.</p>
+      </div>
+    </div>`;
+
+  const form = root.querySelector('#login-form');
+  const emailEl = form.elements.email;
+  const passEl = form.elements.password;
+  const errorEl = root.querySelector('#login-error');
+  const submitEl = root.querySelector('#login-submit');
+  const labelEl = root.querySelector('#login-label');
+  const spinnerEl = root.querySelector('#login-spinner');
+  const toggleEl = root.querySelector('#toggle-pw');
+
+  const setError = (msg) => {
+    errorEl.textContent = msg;
+    errorEl.classList.toggle('hidden', !msg);
+  };
+  const setLoading = (on) => {
+    submitEl.disabled = on;
+    spinnerEl.classList.toggle('hidden', !on);
+    labelEl.textContent = on ? 'Memproses…' : 'Masuk';
+  };
+
+  toggleEl.addEventListener('click', () => {
+    const show = passEl.type === 'password';
+    passEl.type = show ? 'text' : 'password';
+    toggleEl.setAttribute('aria-label', show ? 'Sembunyikan password' : 'Tampilkan password');
+    toggleEl.querySelector('[data-eye]').innerHTML = icon(show ? 'eye-off' : 'eye', 'size-5');
+  });
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (submitEl.disabled) return;
+
+    const email = emailEl.value.trim();
+    const password = passEl.value;
+    if (!email || !password) {
+      setError('Email dan password wajib diisi.');
+      return;
+    }
+
+    setError('');
+    setLoading(true);
+    const { error } = await signIn(email, password);
+    if (error) {
+      setLoading(false);
+      setError(friendlyLoginError(error));
+      passEl.select();
+      return;
+    }
+    onLoggedIn();
+  });
+
+  emailEl.focus();
+}
+
+function friendlyAdminError(msg) {
+  if (/already (been )?registered|already exists|duplicate/i.test(msg)) return 'Email sudah terdaftar.';
+  if (/forbidden/i.test(msg)) return 'Akses ditolak. Hanya super admin yang boleh.';
+  if (/unauthorized|invalid jwt/i.test(msg)) return 'Sesi habis. Silakan login ulang.';
+  return msg;
+}
+
+function generatePassword(len = 12) {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+  const buf = new Uint32Array(len);
+  crypto.getRandomValues(buf);
+  let out = '';
+  for (const n of buf) out += chars[n % chars.length];
+  return out;
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast('Tersalin.', 'success');
+  } catch {
+    toast('Gagal menyalin. Salin manual.', 'error');
+  }
+}
+
+function showCredentials({ title, name, email, password }) {
+  const loginUrl = location.origin + location.pathname;
+  const text =
+    `Login absensi\nURL: ${loginUrl}\n` + (email ? `Email: ${email}\n` : '') + `Password: ${password}`;
+  openModal({
+    title,
+    content: `
+      <p class="text-sm text-slate-500">
+        Berikan ke ${esc(name)}. Password hanya tampil sekarang dan tidak bisa dilihat lagi (tapi bisa di-reset).
+      </p>
+      <dl class="mt-4 space-y-3 rounded-xl bg-slate-50 p-3 text-sm">
+        ${email ? `<div><dt class="text-xs text-slate-500">Email</dt><dd class="break-all font-medium text-slate-900">${esc(email)}</dd></div>` : ''}
+        <div><dt class="text-xs text-slate-500">Password</dt><dd class="select-all break-all font-mono font-medium text-slate-900">${esc(password)}</dd></div>
+      </dl>
+      <div class="mt-5 flex gap-2">
+        <button type="button" data-copy class="${BTN_GHOST} flex-1">${icon('copy', 'size-4')}Salin</button>
+        <button type="button" data-done class="${BTN_PRIMARY} flex-1">Selesai</button>
+      </div>`,
+    onMount: (body, close) => {
+      body.querySelector('[data-copy]').addEventListener('click', () => copyText(text));
+      body.querySelector('[data-done]').addEventListener('click', close);
+    },
+  });
+}
+
+const LABEL = 'mb-1.5 block text-sm font-medium text-slate-700';
+const SUBMIT_CLS = `${BTN_PRIMARY} w-full disabled:cursor-not-allowed disabled:opacity-60`;
+
+async function pageLeader(view) {
+  let leaders = [];
+
+  view.innerHTML = `
+    <div class="mx-auto max-w-3xl">
+      <div class="mb-4 flex items-center justify-between gap-3">
+        <p class="text-sm text-slate-500">Akun leader yang mengisi absensi timnya.</p>
+        <button type="button" id="btn-add" class="${BTN_PRIMARY} shrink-0">${icon('plus', 'size-4')}Tambah</button>
+      </div>
+      <div id="leader-list" aria-live="polite"></div>
+    </div>`;
+  const listEl = view.querySelector('#leader-list');
+
+  const card = (l) => `
+    <li class="rounded-xl border border-slate-200 bg-white p-4 shadow-soft transition hover:border-slate-300 hover:shadow-soft-lg">
+      <div class="flex items-start justify-between gap-3">
+        <div class="flex min-w-0 items-center gap-3">
+          <div class="flex size-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-violet-600 text-sm font-semibold text-white shadow-sm">
+            ${esc(initials(l.full_name))}
+          </div>
+          <div class="min-w-0">
+            <p class="truncate text-sm font-semibold text-slate-900">${esc(l.full_name)}</p>
+            <p class="truncate text-sm text-slate-500">${esc(l.email || '—')}</p>
+          </div>
+        </div>
+        <span class="inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${l.is_active ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}">
+          <span class="size-1.5 rounded-full ${l.is_active ? 'bg-emerald-500' : 'bg-slate-400'}"></span>
+          ${l.is_active ? 'Aktif' : 'Nonaktif'}
+        </span>
+      </div>
+      <div class="mt-3 flex flex-wrap gap-2 border-t border-slate-100 pt-3">
+        <button type="button" data-act="reset" data-id="${esc(l.id)}" class="${BTN_SM}">${icon('refresh','size-3.5')} Reset password</button>
+        <button type="button" data-act="toggle" data-id="${esc(l.id)}" class="${BTN_SM}">${l.is_active ? 'Nonaktifkan' : 'Aktifkan'}</button>
+      </div>
+    </li>`;
+
+  const renderList = () => {
+    if (!leaders.length) {
+      listEl.innerHTML = `
+        <div class="rounded-2xl border-2 border-dashed border-slate-200 bg-white/60 p-10 text-center">
+          <div class="mx-auto mb-3 flex size-14 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-600">
+            ${icon('users', 'size-7')}
+          </div>
+          <p class="text-sm font-semibold text-slate-900">Belum ada leader</p>
+          <p class="mt-1 text-sm text-slate-500">Klik Tambah untuk membuat akun leader pertama.</p>
+        </div>`;
+      return;
+    }
+    listEl.innerHTML = `<ul class="space-y-3">${leaders.map(card).join('')}</ul>`;
+  };
+
+  async function load() {
+    listEl.innerHTML = '<p class="py-10 text-center text-sm text-slate-400">Memuat…</p>';
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('id, full_name, email, is_active')
+      .eq('role', 'leader')
+      .order('full_name');
+    if (error) {
+      console.error(error);
+      listEl.innerHTML = `
+        <div class="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+          Gagal memuat daftar leader.
+          <button type="button" data-act="retry" class="font-medium underline">Coba lagi</button>
+        </div>`;
+      return;
+    }
+    leaders = data ?? [];
+    renderList();
+  }
+
+  function openAddModal() {
+    openModal({
+      title: 'Tambah leader',
+      content: `
+        <form id="add-form" novalidate class="space-y-4">
+          <div>
+            <label for="f-name" class="${LABEL}">Nama lengkap</label>
+            <input id="f-name" name="full_name" type="text" maxlength="100" autocomplete="off" class="${INPUT}">
+          </div>
+          <div>
+            <label for="f-email" class="${LABEL}">Email login</label>
+            <input id="f-email" name="email" type="email" inputmode="email" autocomplete="off"
+                   autocapitalize="none" spellcheck="false" placeholder="nama@perusahaan.com" class="${INPUT}">
+          </div>
+          <div>
+            <label for="f-pass" class="${LABEL}">Password awal</label>
+            <div class="flex gap-2">
+              <input id="f-pass" name="password" type="text" autocomplete="off" spellcheck="false"
+                     value="${esc(generatePassword())}" class="${INPUT} font-mono">
+              <button type="button" data-gen class="${BTN_SM} shrink-0">Acak</button>
+            </div>
+            <p class="mt-1.5 text-xs text-slate-500">Minimal 8 karakter.</p>
+          </div>
+          <p data-error role="alert" class="hidden rounded-xl bg-red-50 px-3 py-2 text-sm text-red-700"></p>
+          <button type="submit" class="${SUBMIT_CLS}">Buat akun</button>
+        </form>`,
+      onMount: (body, close) => {
+        const form = body.querySelector('#add-form');
+        const errEl = body.querySelector('[data-error]');
+        const btn = form.querySelector('[type="submit"]');
+        const setError = (m) => { errEl.textContent = m; errEl.classList.toggle('hidden', !m); };
+
+        body.querySelector('[data-gen]').addEventListener('click', () => {
+          form.elements.password.value = generatePassword();
+        });
+
+        form.addEventListener('submit', async (e) => {
+          e.preventDefault();
+          if (btn.disabled) return;
+          const full_name = form.elements.full_name.value.trim();
+          const email = form.elements.email.value.trim().toLowerCase();
+          const password = form.elements.password.value;
+
+          if (!full_name) return setError('Nama wajib diisi.');
+          if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return setError('Format email tidak valid.');
+          if (password.length < 8) return setError('Password minimal 8 karakter.');
+
+          setError('');
+          btn.disabled = true;
+          btn.textContent = 'Memproses…';
+          try {
+            await callAdminFn({ action: 'create_leader', full_name, email, password });
+          } catch (err) {
+            btn.disabled = false;
+            btn.textContent = 'Buat akun';
+            setError(friendlyAdminError(err.message));
+            return;
+          }
+          close();
+          showCredentials({ title: 'Akun leader dibuat', name: full_name, email, password });
+          load();
+        });
+      },
+    });
+  }
+
+  function openResetModal(leader) {
+    openModal({
+      title: 'Reset password',
+      content: `
+        <form id="reset-form" novalidate class="space-y-4">
+          <p class="text-sm text-slate-500">Password baru untuk <span class="font-medium text-slate-900">${esc(leader.full_name)}</span>.</p>
+          <div>
+            <label for="f-pass" class="${LABEL}">Password baru</label>
+            <div class="flex gap-2">
+              <input id="f-pass" name="password" type="text" autocomplete="off" spellcheck="false"
+                     value="${esc(generatePassword())}" class="${INPUT} font-mono">
+              <button type="button" data-gen class="${BTN_SM} shrink-0">Acak</button>
+            </div>
+            <p class="mt-1.5 text-xs text-slate-500">Minimal 8 karakter.</p>
+          </div>
+          <p data-error role="alert" class="hidden rounded-xl bg-red-50 px-3 py-2 text-sm text-red-700"></p>
+          <button type="submit" class="${SUBMIT_CLS}">Simpan password</button>
+        </form>`,
+      onMount: (body, close) => {
+        const form = body.querySelector('#reset-form');
+        const errEl = body.querySelector('[data-error]');
+        const btn = form.querySelector('[type="submit"]');
+        const setError = (m) => { errEl.textContent = m; errEl.classList.toggle('hidden', !m); };
+
+        body.querySelector('[data-gen]').addEventListener('click', () => {
+          form.elements.password.value = generatePassword();
+        });
+
+        form.addEventListener('submit', async (e) => {
+          e.preventDefault();
+          if (btn.disabled) return;
+          const password = form.elements.password.value;
+          if (password.length < 8) return setError('Password minimal 8 karakter.');
+
+          setError('');
+          btn.disabled = true;
+          btn.textContent = 'Memproses…';
+          try {
+            await callAdminFn({ action: 'reset_password', user_id: leader.id, password });
+          } catch (err) {
+            btn.disabled = false;
+            btn.textContent = 'Simpan password';
+            setError(friendlyAdminError(err.message));
+            return;
+          }
+          close();
+          showCredentials({ title: 'Password direset', name: leader.full_name, email: leader.email, password });
+        });
+      },
+    });
+  }
+
+  async function toggleActive(leader) {
+    const next = !leader.is_active;
+    const ok = await confirmDialog({
+      title: next ? 'Aktifkan leader?' : 'Nonaktifkan leader?',
+      message: next
+        ? `${leader.full_name} bisa login dan mengisi absensi lagi.`
+        : `${leader.full_name} tidak bisa login dan tidak bisa mengakses data. Data absensi tetap tersimpan.`,
+      confirmLabel: next ? 'Aktifkan' : 'Nonaktifkan',
+      danger: !next,
+    });
+    if (!ok) return;
+
+    const { data, error } = await supabase
+      .from('profiles')
+      .update({ is_active: next })
+      .eq('id', leader.id)
+      .select('id');
+    if (error || !data || data.length === 0) {
+      console.error(error);
+      toast('Gagal mengubah status.', 'error');
+      return;
+    }
+    leader.is_active = next;
+    renderList();
+    toast(next ? 'Leader diaktifkan.' : 'Leader dinonaktifkan.', 'success');
+  }
+
+  listEl.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-act]');
+    if (!btn) return;
+    const act = btn.dataset.act;
+    if (act === 'retry') return load();
+    const leader = leaders.find((l) => l.id === btn.dataset.id);
+    if (!leader) return;
+    if (act === 'reset') openResetModal(leader);
+    else if (act === 'toggle') toggleActive(leader);
+  });
+  view.querySelector('#btn-add').addEventListener('click', openAddModal);
+
+  await load();
+}
+
+function dbMessage(error, map = {}) {
+  if (error?.code && map[error.code]) return map[error.code];
+  if (/failed to fetch|network/i.test(String(error?.message ?? ''))) {
+    return 'Tidak bisa terhubung ke server. Periksa koneksi internet.';
+  }
+  return 'Terjadi kesalahan. Coba lagi.';
+}
+
+const BADGE_ON = 'bg-emerald-50 text-emerald-700';
+const BADGE_OFF = 'bg-slate-100 text-slate-500';
+const errBox = (msg, retry = true) => `
+  <div class="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+    ${esc(msg)}${retry ? ' <button type="button" data-act="retry" class="font-medium underline">Coba lagi</button>' : ''}
+  </div>`;
+
+const DEPT_ERR = {
+  '23505': 'Nama bagian sudah ada.',
+  '23503': 'Bagian masih dipakai karyawan. Pindahkan karyawannya dulu.',
+  '42501': 'Akses ditolak.',
+};
+
+async function pageBagian(view, ctx) {
+  const leaderId = ctx.profile.id;
+  let rows = [];
+
+  view.innerHTML = `
+    <div class="mx-auto max-w-3xl">
+      <div class="mb-4 flex items-center justify-between gap-3">
+        <p class="text-sm text-slate-500">Bagian tempat karyawan ditempatkan.</p>
+        <button type="button" id="btn-add" class="${BTN_PRIMARY} shrink-0">${icon('plus', 'size-4')}Tambah</button>
+      </div>
+      <div id="dept-list" aria-live="polite"></div>
+    </div>`;
+  const listEl = view.querySelector('#dept-list');
+
+  const card = (d) => {
+    const n = d.employees?.[0]?.count ?? 0;
+    return `
+    <li class="rounded-xl border border-slate-200 bg-white p-4 shadow-soft transition hover:border-slate-300 hover:shadow-soft-lg">
+      <div class="flex items-center justify-between gap-3">
+        <div class="flex min-w-0 items-center gap-3">
+          <div class="flex size-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-sky-500 to-indigo-600 text-white shadow-sm">
+            ${icon('building', 'size-5')}
+          </div>
+          <div class="min-w-0">
+            <p class="truncate text-sm font-semibold text-slate-900">${esc(d.name)}</p>
+            <p class="text-xs text-slate-500">${n} karyawan</p>
+          </div>
+        </div>
+        <div class="flex shrink-0 gap-2">
+          <button type="button" data-act="edit" data-id="${esc(d.id)}" class="${BTN_SM}">Ubah</button>
+          <button type="button" data-act="delete" data-id="${esc(d.id)}" class="${BTN_SM}${n > 0 ? ' cursor-not-allowed opacity-50' : ' text-red-700 hover:bg-red-50'}"${n > 0 ? ' disabled title="Masih ada karyawan di bagian ini"' : ''}>Hapus</button>
+        </div>
+      </div>
+    </li>`;
+  };
+
+  const renderList = () => {
+    if (!rows.length) {
+      listEl.innerHTML = `
+        <div class="rounded-2xl border-2 border-dashed border-slate-200 bg-white/60 p-10 text-center">
+          <div class="mx-auto mb-3 flex size-14 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-600">
+            ${icon('grid', 'size-7')}
+          </div>
+          <p class="text-sm font-semibold text-slate-900">Belum ada bagian</p>
+          <p class="mt-1 text-sm text-slate-500">Buat bagian dulu, baru karyawan bisa ditambahkan.</p>
+        </div>`;
+      return;
+    }
+    listEl.innerHTML = `<ul class="space-y-3">${rows.map(card).join('')}</ul>`;
+  };
+
+  async function load() {
+    listEl.innerHTML = '<p class="py-10 text-center text-sm text-slate-400">Memuat…</p>';
+    const { data, error } = await supabase
+      .from('departments')
+      .select('id, name, employees(count)')
+      .eq('leader_id', leaderId)
+      .order('name');
+    if (error) {
+      console.error(error);
+      listEl.innerHTML = errBox('Gagal memuat daftar bagian.');
+      return;
+    }
+    rows = data ?? [];
+    renderList();
+  }
+
+  function openFormModal(dept) {
+    const editing = !!dept;
+    openModal({
+      title: editing ? 'Ubah bagian' : 'Tambah bagian',
+      content: `
+        <form id="dept-form" novalidate class="space-y-4">
+          <div>
+            <label for="f-dname" class="${LABEL}">Nama bagian</label>
+            <input id="f-dname" name="name" type="text" maxlength="60" autocomplete="off"
+                   value="${esc(dept?.name ?? '')}" placeholder="Contoh: Gudang" class="${INPUT}">
+          </div>
+          <p data-error role="alert" class="hidden rounded-xl bg-red-50 px-3 py-2 text-sm text-red-700"></p>
+          <button type="submit" class="${SUBMIT_CLS}">${editing ? 'Simpan' : 'Tambah bagian'}</button>
+        </form>`,
+      onMount: (body, close) => {
+        const form = body.querySelector('#dept-form');
+        const errEl = body.querySelector('[data-error]');
+        const btn = form.querySelector('[type="submit"]');
+        const label = btn.textContent;
+        const setError = (m) => { errEl.textContent = m; errEl.classList.toggle('hidden', !m); };
+
+        form.addEventListener('submit', async (e) => {
+          e.preventDefault();
+          if (btn.disabled) return;
+          const name = form.elements.name.value.trim().replace(/\s+/g, ' ');
+          if (!name) return setError('Nama bagian wajib diisi.');
+
+          setError('');
+          btn.disabled = true;
+          btn.textContent = 'Memproses…';
+          const res = editing
+            ? await supabase.from('departments').update({ name }).eq('id', dept.id).select('id')
+            : await supabase.from('departments').insert({ leader_id: leaderId, name });
+          if (res.error || (editing && !(res.data && res.data.length))) {
+            console.error(res.error);
+            btn.disabled = false;
+            btn.textContent = label;
+            setError(dbMessage(res.error, DEPT_ERR));
+            return;
+          }
+          close();
+          toast(editing ? 'Bagian diperbarui.' : 'Bagian ditambahkan.', 'success');
+          load();
+        });
+      },
+    });
+  }
+
+  async function removeDept(dept) {
+    const ok = await confirmDialog({
+      title: 'Hapus bagian?',
+      message: `Bagian "${dept.name}" akan dihapus permanen.`,
+      confirmLabel: 'Hapus',
+      danger: true,
+    });
+    if (!ok) return;
+    const { data, error } = await supabase.from('departments').delete().eq('id', dept.id).select('id');
+    if (error || !data || data.length === 0) {
+      console.error(error);
+      toast(dbMessage(error, DEPT_ERR), 'error');
+      return;
+    }
+    toast('Bagian dihapus.', 'success');
+    load();
+  }
+
+  listEl.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-act]');
+    if (!btn) return;
+    if (btn.dataset.act === 'retry') return load();
+    const dept = rows.find((d) => d.id === btn.dataset.id);
+    if (!dept) return;
+    if (btn.dataset.act === 'edit') openFormModal(dept);
+    else if (btn.dataset.act === 'delete') removeDept(dept);
+  });
+  view.querySelector('#btn-add').addEventListener('click', () => openFormModal(null));
+
+  await load();
+}
+
+const EMP_ERR = {
+  '23505': 'NIP sudah dipakai karyawan lain.',
+  '23503': 'Bagian tidak valid.',
+  '42501': 'Bagian tidak valid atau akses ditolak.',
+};
+
+async function pageKaryawan(view, ctx) {
+  const leaderId = ctx.profile.id;
+  let depts = [];
+  let emps = [];
+  const f = { q: '', dept: '', status: 'aktif' };
+
+  view.innerHTML = '<div id="k-body" class="mx-auto max-w-5xl"></div>';
+  const body = view.querySelector('#k-body');
+
+  const deptOptions = (selected) =>
+    depts.map((d) => `<option value="${esc(d.id)}"${d.id === selected ? ' selected' : ''}>${esc(d.name)}</option>`).join('');
+
+  const matches = (e, q) =>
+    !q || e.full_name.toLowerCase().includes(q) || (e.nip ?? '').toLowerCase().includes(q);
+  const statusOk = (e) => f.status === 'semua' || (f.status === 'aktif') === e.is_active;
+
+  const row = (e, i, deptName) => `
+    <tr class="transition hover:bg-indigo-50/40">
+      <td class="hidden w-12 px-4 py-3 text-slate-400 md:table-cell">${i + 1}</td>
+      <td class="px-4 py-3">
+        <div class="flex items-center gap-3">
+          <div class="flex size-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-violet-600 text-[11px] font-semibold text-white">
+            ${esc(initials(e.full_name))}
+          </div>
+          <div class="min-w-0">
+            <p class="break-words font-medium text-slate-900">${esc(e.full_name)}</p>
+            <p class="mt-0.5 break-words text-xs text-slate-500 md:hidden">${e.nip ? esc(e.nip) + ' · ' : ''}${esc(deptName ?? '—')}</p>
+          </div>
+        </div>
+      </td>
+      <td class="hidden px-4 py-3 text-slate-600 md:table-cell">${e.nip ? esc(e.nip) : '—'}</td>
+      <td class="hidden px-4 py-3 text-slate-600 md:table-cell">${esc(deptName ?? '—')}</td>
+      <td class="px-4 py-3">
+        <span class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${e.is_active ? BADGE_ON : BADGE_OFF}">
+          <span class="size-1.5 rounded-full ${e.is_active ? 'bg-emerald-500' : 'bg-slate-400'}"></span>
+          ${e.is_active ? 'Aktif' : 'Nonaktif'}
+        </span>
+      </td>
+      <td class="px-4 py-3">
+        <div class="flex flex-col items-end gap-1.5 md:flex-row md:justify-end md:gap-2">
+          <button type="button" data-act="edit" data-id="${esc(e.id)}" class="${BTN_SM} whitespace-nowrap">Ubah</button>
+          <button type="button" data-act="toggle" data-id="${esc(e.id)}" class="${BTN_SM} whitespace-nowrap">${e.is_active ? 'Nonaktifkan' : 'Aktifkan'}</button>
+        </div>
+      </td>
+    </tr>`;
+
+  function renderList() {
+    const q = f.q.trim().toLowerCase();
+    const names = new Map(depts.map((d) => [d.id, d.name]));
+
+    const base = emps.filter((e) => statusOk(e) && matches(e, q));
+    const counts = new Map();
+    base.forEach((e) => counts.set(e.department_id, (counts.get(e.department_id) ?? 0) + 1));
+    body.querySelector('#k-chips').innerHTML =
+      chip('', 'Semua', base.length, !f.dept) +
+      depts.map((d) => chip(d.id, d.name, counts.get(d.id) ?? 0, f.dept === d.id)).join('');
+
+    const list = f.dept ? base.filter((e) => e.department_id === f.dept) : base;
+    body.querySelector('#k-count').textContent = `${list.length} karyawan`;
+
+    const listEl = body.querySelector('#k-list');
+    if (!list.length) {
+      listEl.innerHTML = `
+        <div class="rounded-2xl border-2 border-dashed border-slate-200 bg-white/60 p-10 text-center">
+          <div class="mx-auto mb-3 flex size-14 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-600">
+            ${icon('user', 'size-7')}
+          </div>
+          <p class="text-sm font-semibold text-slate-900">${emps.length ? 'Tidak ada yang cocok' : 'Belum ada karyawan'}</p>
+          <p class="mt-1 text-sm text-slate-500">${emps.length ? 'Ubah kata kunci atau filter.' : 'Klik Tambah untuk menambah karyawan pertama.'}</p>
+        </div>`;
+      return;
+    }
+    listEl.innerHTML = `
+      <div class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-soft">
+        <div class="overflow-x-auto">
+          <table class="min-w-full divide-y divide-slate-200 text-sm">
+            <thead class="bg-slate-50 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+              <tr>
+                <th scope="col" class="hidden w-12 px-4 py-3 md:table-cell">No</th>
+                <th scope="col" class="px-4 py-3">Nama</th>
+                <th scope="col" class="hidden px-4 py-3 md:table-cell">NIP</th>
+                <th scope="col" class="hidden px-4 py-3 md:table-cell">Bagian</th>
+                <th scope="col" class="px-4 py-3">Status</th>
+                <th scope="col" class="px-4 py-3 text-right">Aksi</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100">${list.map((e, i) => row(e, i, names.get(e.department_id))).join('')}</tbody>
+          </table>
+        </div>
+      </div>`;
+  }
+
+  async function load() {
+    body.innerHTML = '<p class="py-10 text-center text-sm text-slate-400">Memuat…</p>';
+    const [d, e] = await Promise.all([
+      supabase.from('departments').select('id, name').eq('leader_id', leaderId).order('name'),
+      supabase.from('employees').select('id, nip, full_name, is_active, department_id').eq('leader_id', leaderId).order('full_name'),
+    ]);
+    if (d.error || e.error) {
+      console.error(d.error || e.error);
+      body.innerHTML = errBox('Gagal memuat data karyawan.');
+      body.querySelector('[data-act="retry"]').addEventListener('click', load);
+      return;
+    }
+    depts = d.data ?? [];
+    emps = e.data ?? [];
+
+    if (!depts.length) {
+      body.innerHTML = `
+        <div class="rounded-2xl border-2 border-dashed border-slate-200 bg-white/60 p-10 text-center">
+          <div class="mx-auto mb-3 flex size-14 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-600">
+            ${icon('grid', 'size-7')}
+          </div>
+          <p class="text-sm font-semibold text-slate-900">Belum ada bagian</p>
+          <p class="mt-1 text-sm text-slate-500">Buat bagian dulu supaya karyawan bisa ditempatkan.</p>
+          <a href="#/bagian" class="${BTN_PRIMARY} mt-4">Ke menu Bagian</a>
+        </div>`;
+      return;
+    }
+
+    body.innerHTML = `
+      <div class="mb-4 space-y-3">
+        <div class="flex gap-2">
+          <input id="k-q" type="search" placeholder="Cari nama atau NIP" autocomplete="off" value="${esc(f.q)}" class="${INPUT}">
+          <button type="button" id="k-add" class="${BTN_PRIMARY} shrink-0">${icon('plus', 'size-4')}Tambah</button>
+        </div>
+        <div id="k-chips" role="group" aria-label="Filter bagian"
+             class="-mx-4 flex gap-2 overflow-x-auto px-4 pb-1 md:mx-0 md:flex-wrap md:overflow-visible md:px-0"></div>
+        <div class="flex items-center justify-between gap-3">
+          <p id="k-count" class="text-xs text-slate-500"></p>
+          <div class="w-40">
+            <select id="k-status" aria-label="Filter status" class="${INPUT}">
+              <option value="aktif"${f.status === 'aktif' ? ' selected' : ''}>Aktif</option>
+              <option value="nonaktif"${f.status === 'nonaktif' ? ' selected' : ''}>Nonaktif</option>
+              <option value="semua"${f.status === 'semua' ? ' selected' : ''}>Semua status</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div id="k-list" aria-live="polite"></div>`;
+
+    body.querySelector('#k-q').addEventListener('input', (ev) => { f.q = ev.target.value; renderList(); });
+    body.querySelector('#k-status').addEventListener('change', (ev) => { f.status = ev.target.value; renderList(); });
+    body.querySelector('#k-chips').addEventListener('click', (ev) => {
+      const b = ev.target.closest('[data-dept]');
+      if (!b) return;
+      f.dept = b.dataset.dept;
+      renderList();
+    });
+    body.querySelector('#k-add').addEventListener('click', () => openFormModal(null));
+    body.querySelector('#k-list').addEventListener('click', (ev) => {
+      const btn = ev.target.closest('[data-act]');
+      if (!btn) return;
+      const emp = emps.find((x) => x.id === btn.dataset.id);
+      if (!emp) return;
+      if (btn.dataset.act === 'edit') openFormModal(emp);
+      else if (btn.dataset.act === 'toggle') toggleActive(emp);
+    });
+    renderList();
+  }
+
+  function openFormModal(emp) {
+    const editing = !!emp;
+    openModal({
+      title: editing ? 'Ubah karyawan' : 'Tambah karyawan',
+      content: `
+        <form id="emp-form" novalidate class="space-y-4">
+          <div>
+            <label for="f-ename" class="${LABEL}">Nama lengkap</label>
+            <input id="f-ename" name="full_name" type="text" maxlength="100" autocomplete="off" value="${esc(emp?.full_name ?? '')}" class="${INPUT}">
+          </div>
+          <div>
+            <label for="f-nip" class="${LABEL}">NIP <span class="font-normal text-slate-400">(opsional)</span></label>
+            <input id="f-nip" name="nip" type="text" maxlength="30" autocomplete="off" value="${esc(emp?.nip ?? '')}" class="${INPUT}">
+          </div>
+          <div>
+            <label for="f-edept" class="${LABEL}">Bagian</label>
+            <select id="f-edept" name="department_id" class="${INPUT}">
+              <option value="">Pilih bagian…</option>${deptOptions(emp?.department_id)}
+            </select>
+          </div>
+          <p data-error role="alert" class="hidden rounded-xl bg-red-50 px-3 py-2 text-sm text-red-700"></p>
+          <button type="submit" class="${SUBMIT_CLS}">${editing ? 'Simpan' : 'Tambah karyawan'}</button>
+        </form>`,
+      onMount: (mbody, close) => {
+        const form = mbody.querySelector('#emp-form');
+        const errEl = mbody.querySelector('[data-error]');
+        const btn = form.querySelector('[type="submit"]');
+        const label = btn.textContent;
+        const setError = (m) => { errEl.textContent = m; errEl.classList.toggle('hidden', !m); };
+
+        form.addEventListener('submit', async (ev) => {
+          ev.preventDefault();
+          if (btn.disabled) return;
+          const full_name = form.elements.full_name.value.trim().replace(/\s+/g, ' ');
+          const nip = form.elements.nip.value.trim();
+          const department_id = form.elements.department_id.value;
+
+          if (!full_name) return setError('Nama wajib diisi.');
+          if (!department_id) return setError('Pilih bagian terlebih dahulu.');
+
+          setError('');
+          btn.disabled = true;
+          btn.textContent = 'Memproses…';
+          const payload = { full_name, nip: nip || null, department_id };
+          const res = editing
+            ? await supabase.from('employees').update(payload).eq('id', emp.id).select('id')
+            : await supabase.from('employees').insert({ ...payload, leader_id: leaderId });
+          if (res.error || (editing && !(res.data && res.data.length))) {
+            console.error(res.error);
+            btn.disabled = false;
+            btn.textContent = label;
+            setError(dbMessage(res.error, EMP_ERR));
+            return;
+          }
+          close();
+          toast(editing ? 'Karyawan diperbarui.' : 'Karyawan ditambahkan.', 'success');
+          load();
+        });
+      },
+    });
+  }
+
+  async function toggleActive(emp) {
+    const next = !emp.is_active;
+    const ok = await confirmDialog({
+      title: next ? 'Aktifkan karyawan?' : 'Nonaktifkan karyawan?',
+      message: next
+        ? `${emp.full_name} akan muncul lagi di daftar absensi.`
+        : `${emp.full_name} tidak muncul lagi di daftar absensi. Riwayat absensinya tetap tersimpan.`,
+      confirmLabel: next ? 'Aktifkan' : 'Nonaktifkan',
+      danger: !next,
+    });
+    if (!ok) return;
+    const { data, error } = await supabase.from('employees').update({ is_active: next }).eq('id', emp.id).select('id');
+    if (error || !data || data.length === 0) {
+      console.error(error);
+      toast('Gagal mengubah status.', 'error');
+      return;
+    }
+    emp.is_active = next;
+    renderList();
+    toast(next ? 'Karyawan diaktifkan.' : 'Karyawan dinonaktifkan.', 'success');
+  }
+
+  await load();
+}
+
+const WIB_TZ = 'Asia/Jakarta';
+const BACKDATE_DAYS = 7;
+const HARI = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+const BULAN = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
+
+function todayWib() {
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat('en-US', { timeZone: WIB_TZ, year: 'numeric', month: '2-digit', day: '2-digit' })
+      .formatToParts(new Date())
+      .map((x) => [x.type, x.value]),
+  );
+  return `${p.year}-${p.month}-${p.day}`;
+}
+function addDays(ymd, n) {
+  const d = new Date(`${ymd}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+const weekday = (ymd) => new Date(`${ymd}T00:00:00Z`).getUTCDay();
+function fmtDate(ymd) {
+  const [y, m, d] = ymd.split('-').map(Number);
+  return `${HARI[weekday(ymd)]}, ${d} ${BULAN[m - 1]} ${y}`;
+}
+const hhmm = (t) => (t ? String(t).slice(0, 5) : '');
+
+const STATUS_META = {
+  hadir: { label: 'Hadir', on: 'border-emerald-600 bg-emerald-600 text-white' },
+  izin: { label: 'Izin', on: 'border-amber-500 bg-amber-500 text-white' },
+  sakit: { label: 'Sakit', on: 'border-sky-600 bg-sky-600 text-white' },
+  alpa: { label: 'Alpa', on: 'border-red-600 bg-red-600 text-white' },
+  cuti: { label: 'Cuti', on: 'border-violet-600 bg-violet-600 text-white' },
+};
+const STATUS_KEYS = Object.keys(STATUS_META);
+const ATT_COLS = 'id, employee_id, work_date, status, check_in, check_out, late_minutes, note';
+const ATT_ERR = {
+  '42501': `Tanggal ini sudah dikunci (maksimal ${BACKDATE_DAYS} hari ke belakang) atau karyawan tidak aktif.`,
+  '23514': 'Data jam tidak valid.',
+  '23503': 'Karyawan tidak ditemukan.',
+};
+const normRec = (r) => ({ ...r, check_in: hhmm(r.check_in), check_out: hhmm(r.check_out) });
+
+function chip(id, label, count, active) {
+  return `
+    <button type="button" data-dept="${esc(id)}" aria-pressed="${active}"
+            class="shrink-0 whitespace-nowrap rounded-full border px-3.5 py-1.5 text-sm font-medium shadow-sm transition focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${active ? 'border-indigo-600 bg-indigo-600 text-white shadow-indigo-600/20' : 'border-slate-300 bg-white text-slate-600 hover:border-slate-400 hover:bg-slate-50'}">${esc(label)} <span class="${active ? 'text-indigo-100' : 'text-slate-400'}">${count}</span></button>`;
+}
+
+async function pageAbsensi(view, ctx) {
+  const leaderId = ctx.profile.id;
+  const maxDate = todayWib();
+  const minDate = addDays(maxDate, -BACKDATE_DAYS);
+  let date = maxDate;
+  let depts = [];
+  let emps = [];
+  let settings = { work_start: '08:00', work_end: '17:00', late_tolerance_minutes: 0 };
+  let att = new Map();
+  let holiday = null;
+  const pending = new Set();
+  const f = { dept: '' };
+
+  view.innerHTML = '<div id="a-body" class="mx-auto max-w-4xl"></div>';
+  const body = view.querySelector('#a-body');
+  const q = (sel) => body.querySelector(sel);
+
+  const deptNames = () => new Map(depts.map((d) => [d.id, d.name]));
+  const visible = () => emps.filter((e) => !f.dept || e.department_id === f.dept);
+
+  function rowHtml(e) {
+    const r = att.get(e.id);
+    const busy = pending.has(e.id);
+    const dis = busy ? ' disabled' : '';
+    const dn = deptNames().get(e.department_id) ?? '—';
+
+    let badge = '';
+    if (busy) badge = '<span class="shrink-0 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-400">Menyimpan…</span>';
+    else if (!r) badge = '<span class="shrink-0 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-500">Belum diisi</span>';
+    else if (r.status === 'hadir' && r.late_minutes > 0)
+      badge = `<span class="shrink-0 rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700">Terlambat ${esc(r.late_minutes)} mnt</span>`;
+    else if (r.status === 'hadir' && r.late_minutes === 0)
+      badge = `<span class="shrink-0 rounded-full ${BADGE_ON} px-2.5 py-1 text-xs font-medium">Tepat waktu</span>`;
+
+    const buttons = STATUS_KEYS.map((k) => {
+      const on = r?.status === k;
+      return `<button type="button" data-status="${k}" aria-pressed="${on}"${dis}
+        class="rounded-lg border px-1 py-2 text-xs font-semibold shadow-sm transition focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:cursor-not-allowed sm:text-sm ${on ? STATUS_META[k].on : 'border-slate-300 bg-white text-slate-600 hover:border-slate-400 hover:bg-slate-50'}">${STATUS_META[k].label}</button>`;
+    }).join('');
+
+    let detail = '';
+    if (r?.status === 'hadir') {
+      detail = `
+        <div class="mt-3 grid grid-cols-2 gap-3 rounded-lg bg-slate-50/70 p-3">
+          <label class="block"><span class="mb-1 block text-xs font-medium text-slate-500">Jam masuk</span>
+            <input type="time" data-field="check_in" value="${esc(r.check_in)}"${dis} class="${INPUT} bg-white"></label>
+          <label class="block"><span class="mb-1 block text-xs font-medium text-slate-500">Jam pulang</span>
+            <input type="time" data-field="check_out" value="${esc(r.check_out)}"${dis} class="${INPUT} bg-white"></label>
+        </div>`;
+    } else if (r) {
+      detail = `
+        <div class="mt-3 rounded-lg bg-slate-50/70 p-3">
+          <label class="block"><span class="mb-1 block text-xs font-medium text-slate-500">Catatan (opsional)</span>
+            <input type="text" data-field="note" maxlength="200" value="${esc(r.note ?? '')}"${dis} class="${INPUT} bg-white"></label>
+        </div>`;
+    }
+    const clear = r && !busy
+      ? '<div class="mt-2 text-right"><button type="button" data-clear class="text-xs font-medium text-slate-400 underline-offset-2 transition hover:text-red-600 hover:underline">Kosongkan</button></div>'
+      : '';
+
+    return `
+      <li data-emp="${esc(e.id)}" class="rounded-xl border border-slate-200 bg-white p-4 shadow-soft transition${busy ? ' opacity-70' : ''}">
+        <div class="flex items-start justify-between gap-3">
+          <div class="flex min-w-0 items-center gap-3">
+            <div class="flex size-9 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-violet-600 text-xs font-semibold text-white shadow-sm">
+              ${esc(initials(e.full_name))}
+            </div>
+            <div class="min-w-0">
+              <p class="truncate text-sm font-semibold text-slate-900">${esc(e.full_name)}</p>
+              <p class="truncate text-xs text-slate-500">${e.nip ? esc(e.nip) + ' · ' : ''}${esc(dn)}</p>
+            </div>
+          </div>
+          ${badge}
+        </div>
+        <div class="mt-3 grid grid-cols-5 gap-1.5" role="group" aria-label="Status ${esc(e.full_name)}">${buttons}</div>
+        ${detail}${clear}
+      </li>`;
+  }
+
+  function updateRow(id) {
+    const emp = emps.find((e) => e.id === id);
+    const li = [...body.querySelectorAll('li[data-emp]')].find((x) => x.dataset.emp === id);
+    if (emp && li) li.outerHTML = rowHtml(emp);
+  }
+
+  function renderSummary() {
+    const c = { hadir: 0, izin: 0, sakit: 0, alpa: 0, cuti: 0, belum: 0 };
+    emps.forEach((e) => {
+      const r = att.get(e.id);
+      if (r) c[r.status] += 1;
+      else c.belum += 1;
+    });
+    const TONE = {
+      hadir: 'border-emerald-100 text-emerald-700 bg-emerald-50/60',
+      izin: 'border-amber-100 text-amber-700 bg-amber-50/60',
+      sakit: 'border-sky-100 text-sky-700 bg-sky-50/60',
+      alpa: 'border-red-100 text-red-700 bg-red-50/60',
+      cuti: 'border-violet-100 text-violet-700 bg-violet-50/60',
+      belum: 'border-slate-200 text-slate-600 bg-slate-50',
+    };
+    const tile = (key, label, n) => `
+      <div class="rounded-xl border ${TONE[key]} px-3 py-2.5 shadow-sm">
+        <p class="text-[11px] font-medium uppercase tracking-wide opacity-80">${label}</p>
+        <p class="mt-0.5 text-xl font-bold tabular-nums">${n}</p>
+      </div>`;
+    q('#a-summary').innerHTML =
+      STATUS_KEYS.map((k) => tile(k, STATUS_META[k].label, c[k])).join('') + tile('belum', 'Belum', c.belum);
+    q('#a-count').textContent = `${visible().length} karyawan · ${c.belum} belum diisi`;
+  }
+
+  function renderChips() {
+    q('#a-chips').innerHTML =
+      chip('', 'Semua', emps.length, !f.dept) +
+      depts.map((d) => chip(d.id, d.name, emps.filter((e) => e.department_id === d.id).length, f.dept === d.id)).join('');
+  }
+
+  function renderInfo() {
+    const dow = weekday(date);
+    let notice = '';
+    if (holiday) notice = `Libur: ${holiday}`;
+    else if (dow === 0 || dow === 6) notice = 'Akhir pekan';
+    q('#a-info').innerHTML = `
+      <p class="text-sm font-medium text-slate-900">${esc(fmtDate(date))}${date === maxDate ? ' <span class="ml-1 rounded-full bg-indigo-50 px-2 py-0.5 text-xs font-medium text-indigo-700">Hari ini</span>' : ''}</p>
+      ${notice ? `<p class="mt-2 rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-800">${esc(notice)}. Absensi tidak wajib diisi, tapi tetap bisa diinput kalau ada yang masuk.</p>` : ''}`;
+  }
+
+  function renderList() {
+    const list = visible();
+    q('#a-list').innerHTML = list.length
+      ? `<ul class="space-y-3">${list.map(rowHtml).join('')}</ul>`
+      : '<div class="rounded-xl border-2 border-dashed border-slate-200 bg-white/60 p-8 text-center text-sm text-slate-500">Tidak ada karyawan di bagian ini.</div>';
+  }
+
+  function renderDateControls() {
+    q('#a-date').value = date;
+    q('#a-prev').disabled = date <= minDate;
+    q('#a-next').disabled = date >= maxDate;
+  }
+
+  async function save(rows) {
+    const d = date;
+    const ids = rows.map((r) => r.employee_id);
+    ids.forEach((id) => pending.add(id));
+    ids.forEach(updateRow);
+    q('#a-all').disabled = true;
+
+    const { data, error } = await supabase
+      .from('attendances')
+      .upsert(rows, { onConflict: 'employee_id,work_date' })
+      .select(ATT_COLS);
+
+    ids.forEach((id) => pending.delete(id));
+    if (d !== date) return false;
+    q('#a-all').disabled = false;
+    if (error || !data) {
+      console.error(error);
+      toast(dbMessage(error, ATT_ERR), 'error');
+      ids.forEach(updateRow);
+      return false;
+    }
+    data.forEach((r) => att.set(r.employee_id, normRec(r)));
+    ids.forEach(updateRow);
+    renderSummary();
+    return true;
+  }
+
+  const payload = (empId, r) => ({
+    employee_id: empId,
+    work_date: date,
+    status: r.status,
+    check_in: r.status === 'hadir' ? r.check_in : null,
+    check_out: r.status === 'hadir' ? r.check_out || null : null,
+    note: r.note ?? null,
+  });
+
+  async function setStatus(empId, status) {
+    if (pending.has(empId)) return;
+    const cur = att.get(empId);
+    if (cur?.status === status) return;
+    await save([payload(empId, { status, check_in: cur?.check_in || settings.work_start, check_out: cur?.check_out, note: cur?.note })]);
+  }
+
+  async function setTime(empId, field, value) {
+    const cur = att.get(empId);
+    if (!cur || cur.status !== 'hadir' || pending.has(empId)) return;
+    const next = { ...cur, [field]: value };
+    if (!next.check_in) {
+      toast('Jam masuk wajib diisi.', 'error');
+      return updateRow(empId);
+    }
+    if (next.check_out && next.check_out < next.check_in) {
+      toast('Jam pulang tidak boleh lebih awal dari jam masuk.', 'error');
+      return updateRow(empId);
+    }
+    if (next.check_in === cur.check_in && (next.check_out || '') === (cur.check_out || '')) return;
+    await save([payload(empId, next)]);
+  }
+
+  async function setNote(empId, value) {
+    const cur = att.get(empId);
+    const note = value.trim() || null;
+    if (!cur || pending.has(empId) || note === (cur.note ?? null)) return;
+    await save([payload(empId, { ...cur, note })]);
+  }
+
+  async function clearRecord(empId) {
+    const emp = emps.find((e) => e.id === empId);
+    if (!emp || pending.has(empId)) return;
+    const ok = await confirmDialog({
+      title: 'Kosongkan absensi?',
+      message: `Absensi ${emp.full_name} pada ${fmtDate(date)} akan dihapus (kembali ke "Belum diisi").`,
+      confirmLabel: 'Kosongkan',
+      danger: true,
+    });
+    if (!ok) return;
+    const d = date;
+    const { data, error } = await supabase
+      .from('attendances')
+      .delete()
+      .eq('employee_id', empId)
+      .eq('work_date', d)
+      .select('id');
+    if (d !== date) return;
+    if (error || !data || data.length === 0) {
+      console.error(error);
+      toast(dbMessage(error, ATT_ERR), 'error');
+      return;
+    }
+    att.delete(empId);
+    updateRow(empId);
+    renderSummary();
+  }
+
+  async function markAllPresent() {
+    const targets = visible().filter((e) => !att.has(e.id) && !pending.has(e.id));
+    if (!targets.length) return toast('Semua sudah terisi.');
+    const ok = await save(
+      targets.map((e) => payload(e.id, { status: 'hadir', check_in: settings.work_start, check_out: null, note: null })),
+    );
+    if (ok) toast(`${targets.length} karyawan ditandai hadir (jam masuk ${settings.work_start}).`, 'success');
+  }
+
+  async function loadDate() {
+    const d = date;
+    q('#a-list').innerHTML = '<p class="py-10 text-center text-sm text-slate-400">Memuat…</p>';
+    const [a, h] = await Promise.all([
+      supabase.from('attendances').select(ATT_COLS).eq('work_date', d),
+      supabase.from('holidays').select('name').eq('holiday_date', d).maybeSingle(),
+    ]);
+    if (d !== date) return;
+    renderInfo();
+    if (a.error) {
+      console.error(a.error);
+      q('#a-list').innerHTML = errBox('Gagal memuat absensi.');
+      q('#a-list [data-act="retry"]').addEventListener('click', loadDate);
+      return;
+    }
+    holiday = h.error ? null : (h.data?.name ?? null);
+    renderInfo();
+    att = new Map((a.data ?? []).map((r) => [r.employee_id, normRec(r)]));
+    renderSummary();
+    renderList();
+  }
+
+  function goDate(next) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(next)) return renderDateControls();
+    date = next < minDate ? minDate : next > maxDate ? maxDate : next;
+    renderDateControls();
+    loadDate();
+  }
+
+  async function init() {
+    body.innerHTML = '<p class="py-10 text-center text-sm text-slate-400">Memuat…</p>';
+    const [d, e, s] = await Promise.all([
+      supabase.from('departments').select('id, name').eq('leader_id', leaderId).order('name'),
+      supabase.from('employees').select('id, nip, full_name, department_id').eq('leader_id', leaderId).eq('is_active', true).order('full_name'),
+      supabase.from('leader_settings').select('work_start, work_end, late_tolerance_minutes').eq('leader_id', leaderId).maybeSingle(),
+    ]);
+    if (d.error || e.error || s.error) {
+      console.error(d.error || e.error || s.error);
+      body.innerHTML = errBox('Gagal memuat data absensi.');
+      body.querySelector('[data-act="retry"]').addEventListener('click', init);
+      return;
+    }
+    depts = d.data ?? [];
+    emps = e.data ?? [];
+    if (s.data) {
+      settings = { work_start: hhmm(s.data.work_start), work_end: hhmm(s.data.work_end), late_tolerance_minutes: s.data.late_tolerance_minutes };
+    }
+
+    if (!emps.length) {
+      body.innerHTML = `
+        <div class="rounded-2xl border-2 border-dashed border-slate-200 bg-white/60 p-10 text-center">
+          <div class="mx-auto mb-3 flex size-14 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-600">
+            ${icon('user', 'size-7')}
+          </div>
+          <p class="text-sm font-semibold text-slate-900">Belum ada karyawan aktif</p>
+          <p class="mt-1 text-sm text-slate-500">Tambahkan karyawan dulu supaya absensi bisa diisi.</p>
+          <a href="#/karyawan" class="${BTN_PRIMARY} mt-4">Ke menu Karyawan</a>
+        </div>`;
+      return;
+    }
+
+    body.innerHTML = `
+      <div class="mb-4 space-y-3">
+        <div class="flex items-center gap-2">
+          <button type="button" id="a-prev" aria-label="Hari sebelumnya" class="${BTN_SM} shrink-0 !px-2.5 !py-2.5">${icon('chevron-left', 'size-5')}</button>
+          <input id="a-date" type="date" min="${minDate}" max="${maxDate}" value="${date}" aria-label="Tanggal absensi" class="${INPUT}">
+          <button type="button" id="a-next" aria-label="Hari berikutnya" class="${BTN_SM} shrink-0 !px-2.5 !py-2.5">${icon('chevron-right', 'size-5')}</button>
+        </div>
+        <div id="a-info"></div>
+        <div id="a-summary" class="grid grid-cols-3 gap-2 sm:grid-cols-6"></div>
+        <div id="a-chips" role="group" aria-label="Filter bagian"
+             class="-mx-4 flex gap-2 overflow-x-auto px-4 pb-1 md:mx-0 md:flex-wrap md:overflow-visible md:px-0"></div>
+        <div class="flex items-center justify-between gap-3">
+          <p id="a-count" class="text-xs text-slate-500"></p>
+          <button type="button" id="a-all" class="${BTN_PRIMARY} disabled:cursor-not-allowed disabled:opacity-60">Hadir semua</button>
+        </div>
+      </div>
+      <div id="a-list" aria-live="polite"></div>`;
+
+    q('#a-prev').addEventListener('click', () => goDate(addDays(date, -1)));
+    q('#a-next').addEventListener('click', () => goDate(addDays(date, 1)));
+    q('#a-date').addEventListener('change', (ev) => goDate(ev.target.value));
+    q('#a-all').addEventListener('click', markAllPresent);
+    q('#a-chips').addEventListener('click', (ev) => {
+      const b = ev.target.closest('[data-dept]');
+      if (!b) return;
+      f.dept = b.dataset.dept;
+      renderChips();
+      renderList();
+      renderSummary();
+    });
+    q('#a-list').addEventListener('click', (ev) => {
+      const li = ev.target.closest('li[data-emp]');
+      if (!li) return;
+      const st = ev.target.closest('[data-status]');
+      if (st) return setStatus(li.dataset.emp, st.dataset.status);
+      if (ev.target.closest('[data-clear]')) clearRecord(li.dataset.emp);
+    });
+    q('#a-list').addEventListener('change', (ev) => {
+      const el = ev.target;
+      const li = el.closest('li[data-emp]');
+      if (!li) return;
+      if (el.dataset.field === 'check_in' || el.dataset.field === 'check_out') setTime(li.dataset.emp, el.dataset.field, el.value);
+      else if (el.dataset.field === 'note') setNote(li.dataset.emp, el.value);
+    });
+
+    renderChips();
+    renderDateControls();
+    await loadDate();
+  }
+
+  await init();
+}
+
+async function pagePengaturan(view, ctx) {
+  const leaderId = ctx.profile.id;
+  view.innerHTML = '<div id="s-body" class="mx-auto max-w-lg"></div>';
+  const body = view.querySelector('#s-body');
+
+  function renderForm(s) {
+    body.innerHTML = `
+      <form id="s-form" novalidate class="space-y-5 rounded-2xl border border-slate-200 bg-white p-6 shadow-soft">
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label for="s-start" class="${LABEL}">Jam masuk</label>
+            <input id="s-start" name="work_start" type="time" value="${esc(hhmm(s.work_start))}" class="${INPUT}">
+          </div>
+          <div>
+            <label for="s-end" class="${LABEL}">Jam pulang</label>
+            <input id="s-end" name="work_end" type="time" value="${esc(hhmm(s.work_end))}" class="${INPUT}">
+          </div>
+        </div>
+        <div>
+          <label for="s-tol" class="${LABEL}">Toleransi keterlambatan (menit)</label>
+          <input id="s-tol" name="tol" type="number" inputmode="numeric" min="0" max="120" step="1" value="${esc(s.late_tolerance_minutes)}" class="${INPUT}">
+          <p class="mt-1.5 text-xs text-slate-500">
+            Keterlambatan = selisih jam masuk karyawan dengan jam masuk standar, dikurangi toleransi.
+            Contoh: standar 08:00, toleransi 10 menit, karyawan masuk 08:15 → terlambat 5 menit.
+          </p>
+        </div>
+        <p class="flex items-start gap-2 rounded-xl bg-amber-50/70 px-3 py-2.5 text-xs text-amber-800">
+          <span class="mt-0.5 shrink-0">${icon('alert','size-4')}</span>
+          <span>Perubahan berlaku untuk absensi yang diinput setelah ini. Absensi yang sudah tersimpan tidak berubah.</span>
+        </p>
+        <p data-error role="alert" class="hidden rounded-xl bg-red-50 px-3 py-2 text-sm text-red-700"></p>
+        <button type="submit" class="${SUBMIT_CLS}">Simpan pengaturan</button>
+      </form>`;
+
+    const form = body.querySelector('#s-form');
+    const errEl = form.querySelector('[data-error]');
+    const btn = form.querySelector('[type="submit"]');
+    const setError = (m) => { errEl.textContent = m; errEl.classList.toggle('hidden', !m); };
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (btn.disabled) return;
+      const work_start = form.elements.work_start.value;
+      const work_end = form.elements.work_end.value;
+      const tolRaw = form.elements.tol.value.trim();
+      const tol = Number(tolRaw);
+
+      if (!work_start || !work_end) return setError('Jam masuk dan jam pulang wajib diisi.');
+      if (work_end <= work_start) return setError('Jam pulang harus lebih akhir dari jam masuk.');
+      if (tolRaw === '' || !Number.isInteger(tol) || tol < 0 || tol > 120) return setError('Toleransi harus bilangan bulat 0 sampai 120 menit.');
+
+      setError('');
+      btn.disabled = true;
+      btn.textContent = 'Menyimpan…';
+      const { data, error } = await supabase
+        .from('leader_settings')
+        .update({ work_start, work_end, late_tolerance_minutes: tol })
+        .eq('leader_id', leaderId)
+        .select('leader_id');
+      btn.disabled = false;
+      btn.textContent = 'Simpan pengaturan';
+      if (error || !data || data.length === 0) {
+        console.error(error);
+        setError(dbMessage(error, { '23514': 'Nilai tidak valid. Pastikan jam pulang setelah jam masuk dan toleransi 0-120 menit.' }));
+        return;
+      }
+      toast('Pengaturan disimpan.', 'success');
+    });
+  }
+
+  async function load() {
+    body.innerHTML = '<p class="py-10 text-center text-sm text-slate-400">Memuat…</p>';
+    const { data, error } = await supabase
+      .from('leader_settings')
+      .select('work_start, work_end, late_tolerance_minutes')
+      .eq('leader_id', leaderId)
+      .maybeSingle();
+    if (error) {
+      console.error(error);
+      body.innerHTML = errBox('Gagal memuat pengaturan.');
+      body.querySelector('[data-act="retry"]').addEventListener('click', load);
+      return;
+    }
+    if (!data) {
+      body.innerHTML = errBox('Pengaturan belum tersedia untuk akun ini. Hubungi super admin.', false);
+      return;
+    }
+    renderForm(data);
+  }
+
+  await load();
+}
+
+/* ============================== 7. LAYOUT ============================== */
+const ROLE_LABEL = { super_admin: 'Super Admin', leader: 'Leader' };
+const SIDE_ON = ['bg-gradient-to-r', 'from-indigo-50', 'to-violet-50', 'text-indigo-700', 'shadow-sm'];
+const SIDE_OFF = ['text-slate-600', 'hover:bg-slate-50', 'hover:text-slate-900'];
+const BOTTOM_ON = ['text-indigo-600'];
+const BOTTOM_OFF = ['text-slate-400', 'hover:text-slate-600'];
+
+const initials = (name) =>
+  String(name ?? '')
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((w) => w[0]?.toUpperCase() ?? '')
+    .join('') || '?';
+
+function paintNav(el, on, onCls, offCls) {
+  el.classList.remove(...(on ? offCls : onCls));
+  el.classList.add(...(on ? onCls : offCls));
+  if (on) el.setAttribute('aria-current', 'page');
+  else el.removeAttribute('aria-current');
+}
+
+function renderShell(root, { profile, items, onLogout }) {
+  const name = esc(profile.full_name);
+  const role = esc(ROLE_LABEL[profile.role] ?? profile.role);
+  const ini = esc(initials(profile.full_name));
+
+  const sideLinks = items
+    .map(
+      (i) => `
+      <a href="#${i.path}" data-path="${i.path}"
+         class="side-link flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition ${SIDE_OFF.join(' ')}">
+        ${icon(i.icon, 'size-5 shrink-0')}<span class="truncate">${esc(i.label)}</span>
+      </a>`,
+    )
+    .join('');
+
+  const bottomLinks = items
+    .map(
+      (i) => `
+      <a href="#${i.path}" data-path="${i.path}"
+         class="bottom-link flex flex-col items-center gap-1 px-1 py-2.5 text-[11px] font-medium transition ${BOTTOM_OFF.join(' ')}">
+        ${icon(i.icon, 'size-6')}<span class="max-w-full truncate">${esc(i.label)}</span>
+      </a>`,
+    )
+    .join('');
+
+  root.innerHTML = `
+    <div class="min-h-[100dvh] md:flex">
+      <aside class="hidden border-r border-slate-200 bg-white md:fixed md:inset-y-0 md:flex md:w-64 md:flex-col">
+        <div class="flex h-16 items-center gap-3 border-b border-slate-100 px-5">
+          <div class="flex size-9 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 text-white shadow-sm shadow-indigo-600/30">
+            ${icon('check', 'size-5')}
+          </div>
+          <div class="min-w-0">
+            <p class="truncate text-sm font-semibold tracking-tight text-slate-900">Absensi</p>
+            <p class="truncate text-xs text-slate-500">Karyawan</p>
+          </div>
+        </div>
+        <nav class="flex-1 space-y-1 overflow-y-auto px-3 py-4" aria-label="Menu utama">${sideLinks}</nav>
+        <div class="border-t border-slate-100 p-3">
+          <div class="flex items-center gap-3 rounded-xl bg-slate-50 px-2.5 py-2">
+            <div class="flex size-9 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-violet-600 text-xs font-semibold text-white shadow-sm">
+              ${ini}
+            </div>
+            <div class="min-w-0 flex-1">
+              <p class="truncate text-sm font-medium text-slate-900">${name}</p>
+              <p class="truncate text-xs text-slate-500">${role}</p>
+            </div>
+            <button type="button" data-logout aria-label="Keluar" title="Keluar"
+                    class="rounded-lg p-2 text-slate-400 transition hover:bg-white hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500">
+              ${icon('logout', 'size-5')}
+            </button>
+          </div>
+        </div>
+      </aside>
+
+      <div class="flex min-w-0 flex-1 flex-col md:pl-64">
+        <header class="sticky top-0 z-20 flex h-14 items-center justify-between border-b border-slate-200/80 bg-white/80 px-4 backdrop-blur-md md:px-8">
+          <h1 id="page-title" class="truncate text-base font-semibold tracking-tight text-slate-900"></h1>
+          <div class="flex items-center gap-1 md:hidden">
+            <div class="mr-1 text-right leading-tight">
+              <p class="max-w-[8rem] truncate text-xs font-medium text-slate-900">${name}</p>
+              <p class="text-[11px] text-slate-500">${role}</p>
+            </div>
+            <button type="button" data-logout aria-label="Keluar"
+                    class="rounded-lg p-2 text-slate-500 transition hover:bg-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500">
+              ${icon('logout', 'size-5')}
+            </button>
+          </div>
+        </header>
+
+        <main id="view" tabindex="-1" class="flex-1 bg-slate-50/60 px-4 py-5 pb-28 focus:outline-none md:px-8 md:py-8 md:pb-8"></main>
+      </div>
+
+      <nav class="fixed inset-x-0 bottom-0 z-30 border-t border-slate-200 bg-white/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-md md:hidden" aria-label="Menu utama">
+        <div class="grid" style="grid-template-columns:repeat(${items.length},minmax(0,1fr))">${bottomLinks}</div>
+      </nav>
+    </div>`;
+
+  root.querySelectorAll('[data-logout]').forEach((b) => b.addEventListener('click', onLogout));
+
+  const titleEl = root.querySelector('#page-title');
+  const sideEls = [...root.querySelectorAll('.side-link')];
+  const bottomEls = [...root.querySelectorAll('.bottom-link')];
+
+  function setActive(item) {
+    titleEl.textContent = item.label;
+    document.title = `${item.label} · Absensi Karyawan`;
+    sideEls.forEach((el) => paintNav(el, el.dataset.path === item.path, SIDE_ON, SIDE_OFF));
+    bottomEls.forEach((el) => paintNav(el, el.dataset.path === item.path, BOTTOM_ON, BOTTOM_OFF));
+  }
+
+  return { view: root.querySelector('#view'), setActive };
+}
+
+/* ============================== 8. ROUTES ============================== */
+const ROUTES = {
+  leader: [
+    { path: '/absensi', label: 'Absensi', icon: 'check', render: pageAbsensi },
+    { path: '/karyawan', label: 'Karyawan', icon: 'user', render: pageKaryawan },
+    { path: '/bagian', label: 'Bagian', icon: 'grid', render: pageBagian },
+    { path: '/report', label: 'Report', icon: 'chart', render: stubPage('Report', 'Report absensi bulanan, export Excel dan PDF.') },
+    { path: '/pengaturan', label: 'Pengaturan', icon: 'sliders', render: pagePengaturan },
+  ],
+  super_admin: [
+    { path: '/leader', label: 'Leader', icon: 'users', render: pageLeader },
+    { path: '/report', label: 'Report', icon: 'chart', render: stubPage('Report', 'Report absensi lintas leader.') },
+    { path: '/libur', label: 'Hari Libur', icon: 'calendar', render: stubPage('Hari Libur', 'Libur nasional dan cuti bersama.') },
+  ],
+};
+const routesFor = (role) => ROUTES[role] ?? [];
+
+/* ============================ 9. APP + MAIN ============================ */
+const root = document.getElementById('app');
+let loginNotice = '';
+
+function showLogin() {
+  stopRouter();
+  document.title = 'Masuk · Absensi Karyawan';
+  history.replaceState(null, '', location.pathname + location.search);
+  renderLogin(root, { notice: loginNotice, onLoggedIn: boot });
+}
+
+async function boot() {
+  loginNotice = '';
+
+  let result;
+  try {
+    result = await loadSession();
+  } catch (e) {
+    console.error(e);
+    showError(root, {
+      message: 'Data akun gagal dimuat. Periksa koneksi internet lalu coba lagi.',
+      onRetry: boot,
+      onLogout: () => signOut().finally(showLogin),
+    });
+    return;
+  }
+
+  if (!result.session) return showLogin();
+
+  const { profile } = result;
+  const items = profile ? routesFor(profile.role) : [];
+
+  if (!profile || !profile.is_active || items.length === 0) {
+    loginNotice = !profile
+      ? 'Akun belum terdaftar di aplikasi. Hubungi super admin.'
+      : 'Akun tidak aktif. Hubungi super admin.';
+    await signOut();
+    showLogin();
+    return;
+  }
+
+  const shell = renderShell(root, { profile, items, onLogout: () => signOut() });
+  startRouter({ items, ctx: { profile }, view: shell.view, onNavigate: shell.setActive });
+}
+
+async function start() {
+  supabase.auth.onAuthStateChange((event) => {
+    if (event === 'SIGNED_OUT') setTimeout(showLogin, 0);
+  });
+  await boot();
+}
+
+const configMissing = (v) => !v || v.includes('ISI_');
+
+if (configMissing(SUPABASE_URL) || configMissing(SUPABASE_ANON_KEY)) {
+  showFatal(root, 'Konfigurasi belum diisi', 'Isi SUPABASE_URL dan SUPABASE_ANON_KEY di bagian CONFIG pada index.html.');
+} else {
+  try {
+    const { createClient } = await import('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm');
+    supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      auth: { persistSession: true, autoRefreshToken: true },
+    });
+    await start();
+  } catch (e) {
+    console.error(e);
+    showFatal(root, 'Aplikasi gagal dimuat', 'Periksa koneksi internet, lalu muat ulang halaman.');
+  }
+}
+</script>
+</body>
+</html>
