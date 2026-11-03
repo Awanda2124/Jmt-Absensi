@@ -76,6 +76,81 @@ const BTN_PRIMARY =
 const BTN_GHOST =
   'rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2';
 
+const BTN_DANGER =
+  'rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2';
+const BTN_SM =
+  'rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2';
+const INPUT =
+  'block w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-base text-slate-900 placeholder-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 sm:text-sm';
+
+// Modal: bottom sheet di HP, kotak di tengah di desktop. Esc / klik latar / tombol X untuk menutup.
+// onMount(body, close) dipanggil setelah modal tampil. onClose() dipanggil saat modal tertutup.
+function openModal({ title, content, onMount, onClose }) {
+  const prevFocus = document.activeElement;
+  const host = document.createElement('div');
+  host.className = 'fixed inset-0 z-40 flex items-end justify-center bg-slate-900/40 sm:items-center sm:p-4';
+  host.innerHTML = `
+    <div role="dialog" aria-modal="true" aria-labelledby="modal-title"
+         class="w-full max-w-md rounded-t-2xl bg-white shadow-xl sm:rounded-2xl">
+      <div class="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+        <h2 id="modal-title" class="text-base font-semibold text-slate-900">${esc(title)}</h2>
+        <button type="button" data-close aria-label="Tutup"
+                class="rounded-lg p-1.5 text-slate-400 hover:bg-slate-50 hover:text-slate-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500">
+          ${icon('x', 'size-5')}
+        </button>
+      </div>
+      <div data-body class="max-h-[80dvh] overflow-y-auto px-5 py-4 pb-[max(1rem,env(safe-area-inset-bottom))]">${content}</div>
+    </div>`;
+  document.body.appendChild(host);
+  document.body.classList.add('overflow-hidden');
+
+  let closed = false;
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  function close() {
+    if (closed) return;
+    closed = true;
+    document.removeEventListener('keydown', onKey);
+    host.remove();
+    document.body.classList.remove('overflow-hidden');
+    if (prevFocus && typeof prevFocus.focus === 'function') prevFocus.focus();
+    if (onClose) onClose();
+  }
+  document.addEventListener('keydown', onKey);
+  host.addEventListener('mousedown', (e) => { if (e.target === host) close(); });
+  host.querySelector('[data-close]').addEventListener('click', close);
+
+  const body = host.querySelector('[data-body]');
+  if (onMount) onMount(body, close);
+  const first = body.querySelector('input, button, select, textarea');
+  if (first) first.focus();
+  return close;
+}
+
+// Dialog konfirmasi. Resolve true kalau user menekan tombol konfirmasi, false kalau batal/ditutup.
+function confirmDialog({ title, message, confirmLabel = 'Ya', danger = false }) {
+  return new Promise((resolve) => {
+    let decided = false;
+    openModal({
+      title,
+      content: `
+        <p class="text-sm text-slate-600">${esc(message)}</p>
+        <div class="mt-5 flex gap-2">
+          <button type="button" data-no class="${BTN_GHOST} flex-1">Batal</button>
+          <button type="button" data-yes class="${danger ? BTN_DANGER : BTN_PRIMARY} flex-1">${esc(confirmLabel)}</button>
+        </div>`,
+      onMount: (body, close) => {
+        body.querySelector('[data-no]').addEventListener('click', close);
+        body.querySelector('[data-yes]').addEventListener('click', () => {
+          decided = true;
+          resolve(true);
+          close();
+        });
+      },
+      onClose: () => { if (!decided) resolve(false); },
+    });
+  });
+}
+
 function showFatal(root, title, detail) {
   root.innerHTML = `
     <div class="flex min-h-[100dvh] items-center justify-center px-4">
@@ -110,6 +185,9 @@ const ICON_PATHS = {
   users: '<circle cx="9" cy="8" r="3.25"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><path d="M16 5.2a3.25 3.25 0 0 1 0 5.6M18 14.3c1.8.8 3 2.6 3 4.7"/>',
   grid: '<rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"/>',
   chart: '<path d="M3 3v18h18"/><path d="M8 17v-5M12.5 17V8M17 17v-8"/>',
+  x: '<path d="M6 6l12 12M18 6 6 18"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/>',
   sliders: '<path d="M4 6h8M16 6h4M4 12h2M10 12h10M4 18h10M18 18h2"/><circle cx="14" cy="6" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="16" cy="18" r="2"/>',
   calendar: '<rect x="3.5" y="5" width="17" height="15.5" rx="2"/><path d="M8 3v4M16 3v4M3.5 10h17"/>',
   logout: '<path d="M15.75 9V5.25A2.25 2.25 0 0 0 13.5 3h-6a2.25 2.25 0 0 0-2.25 2.25v13.5A2.25 2.25 0 0 0 7.5 21h6a2.25 2.25 0 0 0 2.25-2.25V15m3 0 3-3m0 0-3-3m3 3H9"/>',
@@ -128,6 +206,30 @@ function signIn(email, password) {
 // Logout. UI login ditampilkan oleh listener SIGNED_OUT di APP (satu jalur saja).
 async function signOut() {
   await supabase.auth.signOut();
+}
+
+// Panggil Edge Function admin-users (hanya berhasil untuk super admin).
+// Melempar Error dengan pesan dari server kalau gagal.
+async function callAdminFn(body) {
+  const { data, error } = await supabase.functions.invoke('admin-users', { body });
+  if (error) {
+    let msg = 'Gagal menghubungi server.';
+    if (error.name === 'FunctionsFetchError') {
+      msg = 'Tidak bisa terhubung ke server. Periksa koneksi internet.';
+    } else {
+      try {
+        const res = error.context; // Response untuk FunctionsHttpError
+        if (res && typeof res.json === 'function') {
+          const j = await res.json();
+          if (j && j.error) msg = String(j.error);
+        }
+      } catch {
+        /* pakai pesan default */
+      }
+    }
+    throw new Error(msg);
+  }
+  return data;
 }
 
 // Return { session: null, profile: null } kalau belum login.
@@ -204,9 +306,6 @@ function stubPage(title, description) {
 }
 
 // --- Login ---
-const INPUT =
-  'block w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-base text-slate-900 placeholder-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 sm:text-sm';
-
 function friendlyLoginError(error) {
   const msg = String(error?.message ?? '');
   if (error?.status === 429) return 'Terlalu banyak percobaan. Coba lagi beberapa menit lagi.';
@@ -317,6 +416,287 @@ function renderLogin(root, { notice = '', onLoggedIn }) {
   });
 
   emailEl.focus();
+}
+
+// --- Leader (super admin): kelola akun leader ---
+function friendlyAdminError(msg) {
+  if (/already (been )?registered|already exists|duplicate/i.test(msg)) return 'Email sudah terdaftar.';
+  if (/forbidden/i.test(msg)) return 'Akses ditolak. Hanya super admin yang boleh.';
+  if (/unauthorized|invalid jwt/i.test(msg)) return 'Sesi habis. Silakan login ulang.';
+  return msg;
+}
+
+// Password acak 12 karakter (tanpa karakter yang mirip: 0/O, 1/l/I)
+function generatePassword(len = 12) {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+  const buf = new Uint32Array(len);
+  crypto.getRandomValues(buf);
+  let out = '';
+  for (const n of buf) out += chars[n % chars.length];
+  return out;
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast('Tersalin.', 'success');
+  } catch {
+    toast('Gagal menyalin. Salin manual.', 'error');
+  }
+}
+
+// Tampilkan kredensial sekali saja setelah akun dibuat / password di-reset
+function showCredentials({ title, name, email, password }) {
+  const loginUrl = location.origin + location.pathname;
+  const text =
+    `Login absensi\nURL: ${loginUrl}\n` + (email ? `Email: ${email}\n` : '') + `Password: ${password}`;
+  openModal({
+    title,
+    content: `
+      <p class="text-sm text-slate-500">
+        Berikan ke ${esc(name)}. Password hanya tampil sekarang dan tidak bisa dilihat lagi (tapi bisa di-reset).
+      </p>
+      <dl class="mt-4 space-y-3 rounded-lg bg-slate-50 p-3 text-sm">
+        ${email ? `<div><dt class="text-xs text-slate-500">Email</dt><dd class="break-all font-medium text-slate-900">${esc(email)}</dd></div>` : ''}
+        <div><dt class="text-xs text-slate-500">Password</dt><dd class="select-all break-all font-mono font-medium text-slate-900">${esc(password)}</dd></div>
+      </dl>
+      <div class="mt-5 flex gap-2">
+        <button type="button" data-copy class="${BTN_GHOST} flex flex-1 items-center justify-center gap-1.5">${icon('copy', 'size-4')}Salin</button>
+        <button type="button" data-done class="${BTN_PRIMARY} flex-1">Selesai</button>
+      </div>`,
+    onMount: (body, close) => {
+      body.querySelector('[data-copy]').addEventListener('click', () => copyText(text));
+      body.querySelector('[data-done]').addEventListener('click', close);
+    },
+  });
+}
+
+const LABEL = 'mb-1.5 block text-sm font-medium text-slate-700';
+const SUBMIT_CLS = `${BTN_PRIMARY} w-full disabled:cursor-not-allowed disabled:opacity-60`;
+
+async function pageLeader(view) {
+  let leaders = [];
+
+  view.innerHTML = `
+    <div class="mx-auto max-w-3xl">
+      <div class="mb-4 flex items-center justify-between gap-3">
+        <p class="text-sm text-slate-500">Akun leader yang mengisi absensi timnya.</p>
+        <button type="button" id="btn-add" class="${BTN_PRIMARY} flex shrink-0 items-center gap-1.5">${icon('plus', 'size-4')}Tambah</button>
+      </div>
+      <div id="leader-list" aria-live="polite"></div>
+    </div>`;
+  const listEl = view.querySelector('#leader-list');
+
+  const card = (l) => `
+    <li class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div class="flex items-start justify-between gap-3">
+        <div class="min-w-0">
+          <p class="truncate text-sm font-semibold text-slate-900">${esc(l.full_name)}</p>
+          <p class="truncate text-sm text-slate-500">${esc(l.email || '—')}</p>
+        </div>
+        <span class="shrink-0 rounded-full px-2.5 py-0.5 text-xs font-medium ${l.is_active ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}">${l.is_active ? 'Aktif' : 'Nonaktif'}</span>
+      </div>
+      <div class="mt-3 flex flex-wrap gap-2">
+        <button type="button" data-act="reset" data-id="${esc(l.id)}" class="${BTN_SM}">Reset password</button>
+        <button type="button" data-act="toggle" data-id="${esc(l.id)}" class="${BTN_SM}">${l.is_active ? 'Nonaktifkan' : 'Aktifkan'}</button>
+      </div>
+    </li>`;
+
+  const renderList = () => {
+    if (!leaders.length) {
+      listEl.innerHTML = `
+        <div class="rounded-xl border border-dashed border-slate-300 bg-white p-8 text-center">
+          <p class="text-sm font-medium text-slate-900">Belum ada leader</p>
+          <p class="mt-1 text-sm text-slate-500">Klik Tambah untuk membuat akun leader pertama.</p>
+        </div>`;
+      return;
+    }
+    listEl.innerHTML = `<ul class="space-y-3">${leaders.map(card).join('')}</ul>`;
+  };
+
+  async function load() {
+    listEl.innerHTML = '<p class="py-10 text-center text-sm text-slate-400">Memuat…</p>';
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('id, full_name, email, is_active')
+      .eq('role', 'leader')
+      .order('full_name');
+    if (error) {
+      console.error(error);
+      listEl.innerHTML = `
+        <div class="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+          Gagal memuat daftar leader.
+          <button type="button" data-act="retry" class="font-medium underline">Coba lagi</button>
+        </div>`;
+      return;
+    }
+    leaders = data ?? [];
+    renderList();
+  }
+
+  // --- Tambah leader ---
+  function openAddModal() {
+    openModal({
+      title: 'Tambah leader',
+      content: `
+        <form id="add-form" novalidate class="space-y-4">
+          <div>
+            <label for="f-name" class="${LABEL}">Nama lengkap</label>
+            <input id="f-name" name="full_name" type="text" maxlength="100" autocomplete="off" class="${INPUT}">
+          </div>
+          <div>
+            <label for="f-email" class="${LABEL}">Email login</label>
+            <input id="f-email" name="email" type="email" inputmode="email" autocomplete="off"
+                   autocapitalize="none" spellcheck="false" placeholder="nama@perusahaan.com" class="${INPUT}">
+          </div>
+          <div>
+            <label for="f-pass" class="${LABEL}">Password awal</label>
+            <div class="flex gap-2">
+              <input id="f-pass" name="password" type="text" autocomplete="off" spellcheck="false"
+                     value="${esc(generatePassword())}" class="${INPUT} font-mono">
+              <button type="button" data-gen class="${BTN_SM} shrink-0">Acak</button>
+            </div>
+            <p class="mt-1.5 text-xs text-slate-500">Minimal 8 karakter.</p>
+          </div>
+          <p data-error role="alert" class="hidden rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700"></p>
+          <button type="submit" class="${SUBMIT_CLS}">Buat akun</button>
+        </form>`,
+      onMount: (body, close) => {
+        const form = body.querySelector('#add-form');
+        const errEl = body.querySelector('[data-error]');
+        const btn = form.querySelector('[type="submit"]');
+        const setError = (m) => { errEl.textContent = m; errEl.classList.toggle('hidden', !m); };
+
+        body.querySelector('[data-gen]').addEventListener('click', () => {
+          form.elements.password.value = generatePassword();
+        });
+
+        form.addEventListener('submit', async (e) => {
+          e.preventDefault();
+          if (btn.disabled) return;
+          const full_name = form.elements.full_name.value.trim();
+          const email = form.elements.email.value.trim().toLowerCase();
+          const password = form.elements.password.value;
+
+          if (!full_name) return setError('Nama wajib diisi.');
+          if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return setError('Format email tidak valid.');
+          if (password.length < 8) return setError('Password minimal 8 karakter.');
+
+          setError('');
+          btn.disabled = true;
+          btn.textContent = 'Memproses…';
+          try {
+            await callAdminFn({ action: 'create_leader', full_name, email, password });
+          } catch (err) {
+            btn.disabled = false;
+            btn.textContent = 'Buat akun';
+            setError(friendlyAdminError(err.message));
+            return;
+          }
+          close();
+          showCredentials({ title: 'Akun leader dibuat', name: full_name, email, password });
+          load();
+        });
+      },
+    });
+  }
+
+  // --- Reset password ---
+  function openResetModal(leader) {
+    openModal({
+      title: 'Reset password',
+      content: `
+        <form id="reset-form" novalidate class="space-y-4">
+          <p class="text-sm text-slate-500">Password baru untuk <span class="font-medium text-slate-900">${esc(leader.full_name)}</span>.</p>
+          <div>
+            <label for="f-pass" class="${LABEL}">Password baru</label>
+            <div class="flex gap-2">
+              <input id="f-pass" name="password" type="text" autocomplete="off" spellcheck="false"
+                     value="${esc(generatePassword())}" class="${INPUT} font-mono">
+              <button type="button" data-gen class="${BTN_SM} shrink-0">Acak</button>
+            </div>
+            <p class="mt-1.5 text-xs text-slate-500">Minimal 8 karakter.</p>
+          </div>
+          <p data-error role="alert" class="hidden rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700"></p>
+          <button type="submit" class="${SUBMIT_CLS}">Simpan password</button>
+        </form>`,
+      onMount: (body, close) => {
+        const form = body.querySelector('#reset-form');
+        const errEl = body.querySelector('[data-error]');
+        const btn = form.querySelector('[type="submit"]');
+        const setError = (m) => { errEl.textContent = m; errEl.classList.toggle('hidden', !m); };
+
+        body.querySelector('[data-gen]').addEventListener('click', () => {
+          form.elements.password.value = generatePassword();
+        });
+
+        form.addEventListener('submit', async (e) => {
+          e.preventDefault();
+          if (btn.disabled) return;
+          const password = form.elements.password.value;
+          if (password.length < 8) return setError('Password minimal 8 karakter.');
+
+          setError('');
+          btn.disabled = true;
+          btn.textContent = 'Memproses…';
+          try {
+            await callAdminFn({ action: 'reset_password', user_id: leader.id, password });
+          } catch (err) {
+            btn.disabled = false;
+            btn.textContent = 'Simpan password';
+            setError(friendlyAdminError(err.message));
+            return;
+          }
+          close();
+          showCredentials({ title: 'Password direset', name: leader.full_name, email: leader.email, password });
+        });
+      },
+    });
+  }
+
+  // --- Aktif / nonaktif ---
+  // Nonaktif langsung memutus akses data (RLS memeriksa is_active), dan login akan ditolak aplikasi.
+  async function toggleActive(leader) {
+    const next = !leader.is_active;
+    const ok = await confirmDialog({
+      title: next ? 'Aktifkan leader?' : 'Nonaktifkan leader?',
+      message: next
+        ? `${leader.full_name} bisa login dan mengisi absensi lagi.`
+        : `${leader.full_name} tidak bisa login dan tidak bisa mengakses data. Data absensi tetap tersimpan.`,
+      confirmLabel: next ? 'Aktifkan' : 'Nonaktifkan',
+      danger: !next,
+    });
+    if (!ok) return;
+
+    // .select() supaya kelihatan kalau RLS menolak diam-diam (0 baris berubah)
+    const { data, error } = await supabase
+      .from('profiles')
+      .update({ is_active: next })
+      .eq('id', leader.id)
+      .select('id');
+    if (error || !data || data.length === 0) {
+      console.error(error);
+      toast('Gagal mengubah status.', 'error');
+      return;
+    }
+    leader.is_active = next;
+    renderList();
+    toast(next ? 'Leader diaktifkan.' : 'Leader dinonaktifkan.', 'success');
+  }
+
+  listEl.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-act]');
+    if (!btn) return;
+    const act = btn.dataset.act;
+    if (act === 'retry') return load();
+    const leader = leaders.find((l) => l.id === btn.dataset.id);
+    if (!leader) return;
+    if (act === 'reset') openResetModal(leader);
+    else if (act === 'toggle') toggleActive(leader);
+  });
+  view.querySelector('#btn-add').addEventListener('click', openAddModal);
+
+  await load();
 }
 
 /* ============================== 7. LAYOUT ============================== */
@@ -441,7 +821,7 @@ const ROUTES = {
     { path: '/pengaturan', label: 'Pengaturan', icon: 'sliders', render: stubPage('Pengaturan', 'Jam kerja dan toleransi keterlambatan.') },
   ],
   super_admin: [
-    { path: '/leader', label: 'Leader', icon: 'users', render: stubPage('Leader', 'Kelola akun leader.') },
+    { path: '/leader', label: 'Leader', icon: 'users', render: pageLeader },
     { path: '/report', label: 'Report', icon: 'chart', render: stubPage('Report', 'Report absensi lintas leader.') },
     { path: '/libur', label: 'Hari Libur', icon: 'calendar', render: stubPage('Hari Libur', 'Libur nasional dan cuti bersama.') },
   ],
