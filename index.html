@@ -1,4 +1,3 @@
-<!-- versi cloude -->
 <!doctype html>
 <html lang="id">
 <head>
@@ -54,11 +53,6 @@
   <noscript>Aplikasi ini membutuhkan JavaScript.</noscript>
 
 <script type="module">
-/* ==========================================================================
-   ABSENSI KARYAWAN - frontend satu file
-   Backend: Supabase (Postgres + RLS + Edge Function admin-users)
-   ========================================================================== */
-
 /* ============================== 1. CONFIG ============================== */
 const SUPABASE_URL = 'https://hxvfeipzeodutttkpgmz.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_jLBI24ErJfOt-2OpjotNhA_CBq6-roR';
@@ -204,13 +198,6 @@ function showError(root, { message, onRetry, onLogout }) {
   root.querySelector('[data-act="retry"]').addEventListener('click', onRetry);
   root.querySelector('[data-act="logout"]').addEventListener('click', onLogout);
 }
-
-/* Toggle switch (dipakai Karyawan & Bagian) */
-const switchBtn = (on, attrs, label = '') => `
-  <button type="button" role="switch" aria-checked="${on}" aria-label="${esc(label)}" ${attrs}
-    class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 ${on ? 'bg-emerald-500' : 'bg-slate-300'}">
-    <span class="inline-block size-5 rounded-full bg-white shadow transition ${on ? 'translate-x-5' : 'translate-x-0.5'}"></span>
-  </button>`;
 
 /* =============================== 3. ICONS =============================== */
 const ICON_PATHS = {
@@ -776,7 +763,7 @@ async function pageBagian(view, ctx) {
   const card = (d) => {
     const n = d.employees?.[0]?.count ?? 0;
     return `
-    <li class="rounded-xl border border-slate-200 bg-white p-4 shadow-soft transition hover:border-slate-300 hover:shadow-soft-lg${d.is_active ? '' : ' opacity-70'}">
+    <li class="rounded-xl border border-slate-200 bg-white p-4 shadow-soft transition hover:border-slate-300 hover:shadow-soft-lg">
       <div class="flex items-center justify-between gap-3">
         <div class="flex min-w-0 items-center gap-3">
           <div class="flex size-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-sky-500 to-indigo-600 text-white shadow-sm">
@@ -784,13 +771,18 @@ async function pageBagian(view, ctx) {
           </div>
           <div class="min-w-0">
             <p class="truncate text-sm font-semibold text-slate-900">${esc(d.name)}</p>
-            <p class="text-xs text-slate-500">${n} karyawan · ${d.is_active ? 'Aktif' : 'Nonaktif'}</p>
+            <p class="text-xs text-slate-500">${n} karyawan</p>
           </div>
         </div>
-        <div class="flex shrink-0 items-center gap-2">
-          ${switchBtn(d.is_active, `data-act="toggle" data-id="${esc(d.id)}"`, d.is_active ? 'Nonaktifkan bagian' : 'Aktifkan bagian')}
-          <button type="button" data-act="edit" data-id="${esc(d.id)}" class="${BTN_SM}">Ubah</button>
-          <button type="button" data-act="delete" data-id="${esc(d.id)}" class="${BTN_SM}${n > 0 ? ' cursor-not-allowed opacity-50' : ' text-red-700 hover:bg-red-50'}"${n > 0 ? ' disabled title="Masih ada karyawan di bagian ini"' : ''}>Hapus</button>
+        <div class="flex shrink-0 items-center gap-3">
+          <label class="relative inline-flex cursor-pointer items-center">
+            <input type="checkbox" data-act="toggle" data-id="${esc(d.id)}" class="peer sr-only" ${d.is_active !== false ? 'checked' : ''}>
+            <div class="peer h-6 w-11 rounded-full bg-slate-200 after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-emerald-500 peer-checked:after:translate-x-full peer-checked:after:border-white peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-indigo-300"></div>
+          </label>
+          <div class="flex gap-2">
+            <button type="button" data-act="edit" data-id="${esc(d.id)}" class="${BTN_SM}">Ubah</button>
+            <button type="button" data-act="delete" data-id="${esc(d.id)}" class="${BTN_SM}${n > 0 ? ' cursor-not-allowed opacity-50' : ' text-red-700 hover:bg-red-50'}"${n > 0 ? ' disabled title="Masih ada karyawan di bagian ini"' : ''}>Hapus</button>
+          </div>
         </div>
       </div>
     </li>`;
@@ -875,20 +867,6 @@ async function pageBagian(view, ctx) {
     });
   }
 
-  async function toggleDept(dept) {
-    const next = !dept.is_active;
-    const { data, error } = await supabase
-      .from('departments').update({ is_active: next }).eq('id', dept.id).select('id');
-    if (error || !data || data.length === 0) {
-      console.error(error);
-      toast('Gagal mengubah status bagian.', 'error');
-      return;
-    }
-    dept.is_active = next;
-    renderList();
-    toast(next ? 'Bagian diaktifkan.' : 'Bagian dinonaktifkan.', 'success');
-  }
-
   async function removeDept(dept) {
     const ok = await confirmDialog({
       title: 'Hapus bagian?',
@@ -908,15 +886,31 @@ async function pageBagian(view, ctx) {
   }
 
   listEl.addEventListener('click', (e) => {
-    const btn = e.target.closest('[data-act]');
+    const btn = e.target.closest('[data-act="edit"], [data-act="delete"]');
     if (!btn) return;
-    if (btn.dataset.act === 'retry') return load();
     const dept = rows.find((d) => d.id === btn.dataset.id);
     if (!dept) return;
     if (btn.dataset.act === 'edit') openFormModal(dept);
     else if (btn.dataset.act === 'delete') removeDept(dept);
-    else if (btn.dataset.act === 'toggle') toggleDept(dept);
   });
+
+  listEl.addEventListener('change', async (e) => {
+    const el = e.target.closest('[data-act="toggle"]');
+    if (!el) return;
+    const dept = rows.find((d) => d.id === el.dataset.id);
+    if (!dept) return;
+    const next = el.checked;
+    const { data, error } = await supabase.from('departments').update({ is_active: next }).eq('id', dept.id).select('id');
+    if (error || !data || data.length === 0) {
+      console.error(error);
+      toast('Gagal mengubah status.', 'error');
+      el.checked = !next;
+      return;
+    }
+    dept.is_active = next;
+    toast(next ? 'Bagian diaktifkan.' : 'Bagian dinonaktifkan.', 'success');
+  });
+
   view.querySelector('#btn-add').addEventListener('click', () => openFormModal(null));
 
   await load();
@@ -924,7 +918,7 @@ async function pageBagian(view, ctx) {
 
 const EMP_ERR = {
   '23505': 'NIP sudah dipakai karyawan lain.',
-  '23503': 'Karyawan punya riwayat absensi, tidak bisa dihapus. Nonaktifkan saja.',
+  '23503': 'Bagian tidak valid.',
   '42501': 'Bagian tidak valid atau akses ditolak.',
 };
 
@@ -932,22 +926,20 @@ async function pageKaryawan(view, ctx) {
   const leaderId = ctx.profile.id;
   let depts = [];
   let emps = [];
-  const f = { q: '', dept: '', showOff: false };
+  const f = { q: '', dept: '', status: 'aktif' };
 
   view.innerHTML = '<div id="k-body" class="mx-auto max-w-5xl"></div>';
   const body = view.querySelector('#k-body');
 
   const deptOptions = (selected) =>
-    depts
-      .filter((d) => d.is_active || d.id === selected)
-      .map((d) => `<option value="${esc(d.id)}"${d.id === selected ? ' selected' : ''}>${esc(d.name)}</option>`)
-      .join('');
+    depts.map((d) => `<option value="${esc(d.id)}"${d.id === selected ? ' selected' : ''}>${esc(d.name)}</option>`).join('');
 
   const matches = (e, q) =>
     !q || e.full_name.toLowerCase().includes(q) || (e.nip ?? '').toLowerCase().includes(q);
+  const statusOk = (e) => f.status === 'semua' || (f.status === 'aktif') === e.is_active;
 
   const row = (e, i, deptName) => `
-    <tr class="transition hover:bg-indigo-50/40${e.is_active ? '' : ' opacity-60'}">
+    <tr class="transition hover:bg-indigo-50/40">
       <td class="hidden w-12 px-4 py-3 text-slate-400 md:table-cell">${i + 1}</td>
       <td class="px-4 py-3">
         <div class="flex items-center gap-3">
@@ -963,15 +955,18 @@ async function pageKaryawan(view, ctx) {
       <td class="hidden px-4 py-3 text-slate-600 md:table-cell">${e.nip ? esc(e.nip) : '—'}</td>
       <td class="hidden px-4 py-3 text-slate-600 md:table-cell">${esc(deptName ?? '—')}</td>
       <td class="px-4 py-3">
-        <div class="flex items-center gap-2">
-          ${switchBtn(e.is_active, `data-act="toggle" data-id="${esc(e.id)}"`, e.is_active ? 'Nonaktifkan' : 'Aktifkan')}
-          <span class="hidden text-xs text-slate-500 sm:inline">${e.is_active ? 'Aktif' : 'Nonaktif'}</span>
+        <div class="flex items-center gap-3">
+          <label class="relative inline-flex cursor-pointer items-center">
+            <input type="checkbox" data-act="toggle" data-id="${esc(e.id)}" class="peer sr-only" ${e.is_active ? 'checked' : ''}>
+            <div class="peer h-6 w-11 rounded-full bg-slate-200 after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-emerald-500 peer-checked:after:translate-x-full peer-checked:after:border-white peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-indigo-300"></div>
+          </label>
+          <span class="text-xs font-medium ${e.is_active ? 'text-emerald-700' : 'text-slate-500'}">${e.is_active ? 'Aktif' : 'Nonaktif'}</span>
         </div>
       </td>
       <td class="px-4 py-3">
-        <div class="flex flex-col items-end gap-1.5 md:flex-row md:justify-end md:gap-2">
-          <button type="button" data-act="edit" data-id="${esc(e.id)}" class="${BTN_SM} whitespace-nowrap">Ubah</button>
-          <button type="button" data-act="delete" data-id="${esc(e.id)}" class="${BTN_SM} whitespace-nowrap text-red-700 hover:bg-red-50">Hapus</button>
+        <div class="flex items-center justify-end gap-2">
+          <button type="button" data-act="edit" data-id="${esc(e.id)}" class="${BTN_SM}">Ubah</button>
+          <button type="button" data-act="delete" data-id="${esc(e.id)}" class="${BTN_SM} text-red-600 hover:bg-red-50">Hapus</button>
         </div>
       </td>
     </tr>`;
@@ -979,9 +974,9 @@ async function pageKaryawan(view, ctx) {
   function renderList() {
     const q = f.q.trim().toLowerCase();
     const names = new Map(depts.map((d) => [d.id, d.name]));
-    const list = emps.filter(
-      (e) => (f.showOff || e.is_active) && matches(e, q) && (!f.dept || e.department_id === f.dept),
-    );
+
+    const base = emps.filter((e) => statusOk(e) && matches(e, q));
+    const list = f.dept ? base.filter((e) => e.department_id === f.dept) : base;
     body.querySelector('#k-count').textContent = `${list.length} karyawan`;
 
     const listEl = body.querySelector('#k-list');
@@ -1019,7 +1014,7 @@ async function pageKaryawan(view, ctx) {
   async function load() {
     body.innerHTML = '<p class="py-10 text-center text-sm text-slate-400">Memuat…</p>';
     const [d, e] = await Promise.all([
-      supabase.from('departments').select('id, name, is_active').eq('leader_id', leaderId).order('name'),
+      supabase.from('departments').select('id, name').eq('leader_id', leaderId).order('name'),
       supabase.from('employees').select('id, nip, full_name, is_active, department_id').eq('leader_id', leaderId).order('full_name'),
     ]);
     if (d.error || e.error) {
@@ -1046,49 +1041,60 @@ async function pageKaryawan(view, ctx) {
 
     body.innerHTML = `
       <div class="mb-4 space-y-3">
-        <div class="flex gap-2">
-          <input id="k-q" type="search" placeholder="Cari nama atau NIP" autocomplete="off" value="${esc(f.q)}" class="${INPUT}">
+        <div class="flex flex-col sm:flex-row gap-2">
+          <input id="k-q" type="search" placeholder="Cari nama atau NIP" autocomplete="off" value="${esc(f.q)}" class="${INPUT} flex-1">
           <button type="button" id="k-add" class="${BTN_PRIMARY} shrink-0">${icon('plus', 'size-4')}Tambah</button>
         </div>
-        <div class="flex flex-wrap items-center gap-3">
-          <div class="w-full sm:w-56">
+        <div class="flex flex-wrap items-center gap-2">
+          <div class="w-full sm:w-48">
             <select id="k-dept" aria-label="Filter bagian" class="${INPUT}">
-              <option value="">Semua bagian</option>
-              ${depts.map((d) => `<option value="${esc(d.id)}"${f.dept === d.id ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}
+              <option value="">Semua Bagian</option>
+              ${depts.map(d => `<option value="${esc(d.id)}"${f.dept === d.id ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}
             </select>
           </div>
-          <label class="flex items-center gap-2 text-sm text-slate-600">
-            ${switchBtn(f.showOff, 'id="k-showoff"', 'Tampilkan nonaktif')}
-            Tampilkan nonaktif
-          </label>
-          <p id="k-count" class="ml-auto text-xs text-slate-500"></p>
+          <div class="w-full sm:w-40">
+            <select id="k-status" aria-label="Filter status" class="${INPUT}">
+              <option value="aktif"${f.status === 'aktif' ? ' selected' : ''}>Aktif</option>
+              <option value="nonaktif"${f.status === 'nonaktif' ? ' selected' : ''}>Nonaktif</option>
+              <option value="semua"${f.status === 'semua' ? ' selected' : ''}>Semua status</option>
+            </select>
+          </div>
+          <p id="k-count" class="text-xs text-slate-500 ml-auto"></p>
         </div>
       </div>
       <div id="k-list" aria-live="polite"></div>`;
 
     body.querySelector('#k-q').addEventListener('input', (ev) => { f.q = ev.target.value; renderList(); });
+    body.querySelector('#k-status').addEventListener('change', (ev) => { f.status = ev.target.value; renderList(); });
     body.querySelector('#k-dept').addEventListener('change', (ev) => { f.dept = ev.target.value; renderList(); });
-    body.querySelector('#k-showoff').addEventListener('click', (ev) => {
-      f.showOff = !f.showOff;
-      const b = ev.currentTarget;
-      b.setAttribute('aria-checked', f.showOff);
-      b.classList.toggle('bg-emerald-500', f.showOff);
-      b.classList.toggle('bg-slate-300', !f.showOff);
-      const dot = b.firstElementChild;
-      dot.classList.toggle('translate-x-5', f.showOff);
-      dot.classList.toggle('translate-x-0.5', !f.showOff);
-      renderList();
-    });
     body.querySelector('#k-add').addEventListener('click', () => openFormModal(null));
     body.querySelector('#k-list').addEventListener('click', (ev) => {
-      const btn = ev.target.closest('[data-act]');
+      const btn = ev.target.closest('[data-act="edit"], [data-act="delete"]');
       if (!btn) return;
       const emp = emps.find((x) => x.id === btn.dataset.id);
       if (!emp) return;
       if (btn.dataset.act === 'edit') openFormModal(emp);
-      else if (btn.dataset.act === 'toggle') toggleActive(emp);
-      else if (btn.dataset.act === 'delete') removeEmp(emp);
+      else if (btn.dataset.act === 'delete') deleteEmployee(emp);
     });
+
+    body.querySelector('#k-list').addEventListener('change', async (ev) => {
+      const el = ev.target.closest('[data-act="toggle"]');
+      if (!el) return;
+      const emp = emps.find((x) => x.id === el.dataset.id);
+      if (!emp) return;
+      const next = el.checked;
+      const { data, error } = await supabase.from('employees').update({ is_active: next }).eq('id', emp.id).select('id');
+      if (error || !data || data.length === 0) {
+        console.error(error);
+        toast('Gagal mengubah status.', 'error');
+        el.checked = !next;
+        return;
+      }
+      emp.is_active = next;
+      renderList();
+      toast(next ? 'Karyawan diaktifkan.' : 'Karyawan dinonaktifkan.', 'success');
+    });
+
     renderList();
   }
 
@@ -1154,36 +1160,23 @@ async function pageKaryawan(view, ctx) {
     });
   }
 
-  async function toggleActive(emp) {
-    const next = !emp.is_active;
-    const { data, error } = await supabase.from('employees').update({ is_active: next }).eq('id', emp.id).select('id');
-    if (error || !data || data.length === 0) {
-      console.error(error);
-      toast('Gagal mengubah status.', 'error');
-      return;
-    }
-    emp.is_active = next;
-    renderList();
-    toast(next ? 'Karyawan diaktifkan.' : 'Karyawan dinonaktifkan.', 'success');
-  }
-
-  async function removeEmp(emp) {
+  async function deleteEmployee(emp) {
     const ok = await confirmDialog({
       title: 'Hapus karyawan?',
-      message: `${emp.full_name} akan dihapus permanen. Kalau hanya berhenti kerja, lebih baik dinonaktifkan supaya riwayat absensi tetap ada.`,
+      message: `Data ${emp.full_name} akan dihapus permanen. Jika sudah ada riwayat absensi, disarankan nonaktifkan saja (toggle).`,
       confirmLabel: 'Hapus',
       danger: true,
     });
     if (!ok) return;
-    const { data, error } = await supabase.from('employees').delete().eq('id', emp.id).select('id');
-    if (error || !data || data.length === 0) {
+
+    const { error } = await supabase.from('employees').delete().eq('id', emp.id);
+    if (error) {
       console.error(error);
-      toast(dbMessage(error, EMP_ERR), 'error');
+      toast(/foreign key/i.test(error.message) ? 'Tidak bisa dihapus karena sudah ada riwayat absensi.' : 'Gagal menghapus karyawan.', 'error');
       return;
     }
-    emps = emps.filter((x) => x.id !== emp.id);
-    renderList();
     toast('Karyawan dihapus.', 'success');
+    load();
   }
 
   await load();
@@ -1191,7 +1184,6 @@ async function pageKaryawan(view, ctx) {
 
 const WIB_TZ = 'Asia/Jakarta';
 const BACKDATE_DAYS = 7;
-const DEFAULT_OUT = '19:00';
 const HARI = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
 const BULAN = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
 
@@ -1203,8 +1195,6 @@ function todayWib() {
   );
   return `${p.year}-${p.month}-${p.day}`;
 }
-const nowWib = () =>
-  new Intl.DateTimeFormat('en-GB', { timeZone: WIB_TZ, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date());
 function addDays(ymd, n) {
   const d = new Date(`${ymd}T00:00:00Z`);
   d.setUTCDate(d.getUTCDate() + n);
@@ -1218,14 +1208,13 @@ function fmtDate(ymd) {
 const hhmm = (t) => (t ? String(t).slice(0, 5) : '');
 
 const STATUS_META = {
-  hadir: { label: 'Hadir' },
-  izin: { label: 'Izin' },
-  sakit: { label: 'Sakit' },
-  alpa: { label: 'Alpa' },
-  cuti: { label: 'Cuti' },
+  hadir: { label: 'Hadir', on: 'border-emerald-600 bg-emerald-600 text-white' },
+  izin: { label: 'Izin', on: 'border-amber-500 bg-amber-500 text-white' },
+  sakit: { label: 'Sakit', on: 'border-sky-600 bg-sky-600 text-white' },
+  alpa: { label: 'Alpa', on: 'border-red-600 bg-red-600 text-white' },
+  cuti: { label: 'Cuti', on: 'border-violet-600 bg-violet-600 text-white' },
 };
 const STATUS_KEYS = Object.keys(STATUS_META);
-const ABSENT_KEYS = ['izin', 'sakit', 'alpa', 'cuti'];
 const ATT_COLS = 'id, employee_id, work_date, status, check_in, check_out, late_minutes, note';
 const ATT_ERR = {
   '42501': `Tanggal ini sudah dikunci (maksimal ${BACKDATE_DAYS} hari ke belakang) atau karyawan tidak aktif.`,
@@ -1265,38 +1254,66 @@ async function pageAbsensi(view, ctx) {
     const busy = pending.has(e.id);
     const dis = busy ? ' disabled' : '';
     const dn = deptNames().get(e.department_id) ?? '—';
-    const hadir = r?.status === 'hadir';
+    const isHadir = r?.status === 'hadir';
 
     let badge = '';
     if (busy) badge = '<span class="shrink-0 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-400">Menyimpan…</span>';
     else if (!r) badge = '<span class="shrink-0 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-500">Belum diisi</span>';
-    else if (hadir && r.late_minutes > 0)
+    else if (isHadir && r.late_minutes > 0)
       badge = `<span class="shrink-0 rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700">Terlambat ${esc(r.late_minutes)} mnt</span>`;
-    else if (hadir)
+    else if (isHadir && r.late_minutes === 0)
       badge = `<span class="shrink-0 rounded-full ${BADGE_ON} px-2.5 py-1 text-xs font-medium">Tepat waktu</span>`;
-    else
-      badge = `<span class="shrink-0 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600">${esc(STATUS_META[r.status].label)}</span>`;
+    else if (r)
+      badge = `<span class="shrink-0 rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700">${STATUS_META[r.status]?.label || r.status}</span>`;
 
-    const btnBase = 'rounded-lg border px-2 py-2.5 text-sm font-semibold shadow-sm transition focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:cursor-not-allowed disabled:opacity-50';
-    const inCls = hadir ? 'border-emerald-600 bg-emerald-600 text-white' : 'border-slate-300 bg-white text-slate-700 hover:border-slate-400 hover:bg-slate-50';
-    const outCls = 'border-slate-300 bg-white text-slate-700 hover:border-slate-400 hover:bg-slate-50';
-
-    const sel = `
-      <select data-sel aria-label="Keterangan ${esc(e.full_name)}"${dis} class="${INPUT} mt-2">
-        <option value="">Keterangan (izin / sakit / alpa / cuti)</option>
-        ${ABSENT_KEYS.map((k) => `<option value="${k}"${r?.status === k ? ' selected' : ''}>${STATUS_META[k].label}</option>`).join('')}
-      </select>`;
+    let actionArea = '';
+    if (isHadir) {
+      actionArea = `
+        <div class="mt-3 space-y-3">
+          <div class="flex flex-col sm:flex-row items-end gap-2">
+            <label class="block flex-1">
+              <span class="mb-1 block text-xs font-medium text-slate-500">Jam masuk</span>
+              <input type="time" data-field="check_in" value="${esc(r.check_in)}"${dis} class="${INPUT} px-2 py-1.5 text-sm">
+            </label>
+            <label class="block flex-1">
+              <span class="mb-1 block text-xs font-medium text-slate-500">Jam pulang</span>
+              <input type="time" data-field="check_out" value="${esc(r.check_out || '19:00')}"${dis} class="${INPUT} px-2 py-1.5 text-sm">
+            </label>
+            <button type="button" data-act="checkout" class="${BTN_PRIMARY} w-full sm:w-auto bg-indigo-600"${dis}>Check-out</button>
+          </div>
+          <div>
+            <label class="block">
+              <span class="mb-1 block text-xs font-medium text-slate-500">Keterangan / Ubah Status</span>
+              <select data-field="status" class="${INPUT} py-1.5 text-sm"${dis}>
+                <option value="hadir" selected>Hadir</option>
+                <option value="izin">Izin</option>
+                <option value="sakit">Sakit</option>
+                <option value="cuti">Cuti</option>
+                <option value="alpa">Alpa</option>
+              </select>
+            </label>
+          </div>
+        </div>`;
+    } else {
+      actionArea = `
+        <div class="mt-3 flex flex-col sm:flex-row items-end gap-2">
+          <button type="button" data-act="checkin" class="${BTN_PRIMARY} w-full sm:w-auto bg-emerald-600 hover:bg-emerald-700"${dis}>Check-in</button>
+          <div class="flex-1"></div>
+          <label class="block w-full sm:w-64">
+            <span class="mb-1 block text-xs font-medium text-slate-500">Keterangan (Izin/Sakit/dll)</span>
+            <select data-field="status" class="${INPUT} py-1.5 text-sm"${dis}>
+              <option value="">Pilih Keterangan…</option>
+              <option value="izin" ${r?.status === 'izin' ? 'selected' : ''}>Izin</option>
+              <option value="sakit" ${r?.status === 'sakit' ? 'selected' : ''}>Sakit</option>
+              <option value="cuti" ${r?.status === 'cuti' ? 'selected' : ''}>Cuti</option>
+              <option value="alpa" ${r?.status === 'alpa' ? 'selected' : ''}>Alpa</option>
+            </select>
+          </label>
+        </div>`;
+    }
 
     let detail = '';
-    if (hadir) {
-      detail = `
-        <div class="mt-3 grid grid-cols-2 gap-3 rounded-lg bg-slate-50/70 p-3">
-          <label class="block"><span class="mb-1 block text-xs font-medium text-slate-500">Jam masuk</span>
-            <input type="time" data-field="check_in" value="${esc(r.check_in)}"${dis} class="${INPUT} bg-white"></label>
-          <label class="block"><span class="mb-1 block text-xs font-medium text-slate-500">Jam pulang</span>
-            <input type="time" data-field="check_out" value="${esc(r.check_out)}"${dis} class="${INPUT} bg-white"></label>
-        </div>`;
-    } else if (r) {
+    if (r && !isHadir) {
       detail = `
         <div class="mt-3 rounded-lg bg-slate-50/70 p-3">
           <label class="block"><span class="mb-1 block text-xs font-medium text-slate-500">Catatan (opsional)</span>
@@ -1321,11 +1338,7 @@ async function pageAbsensi(view, ctx) {
           </div>
           ${badge}
         </div>
-        <div class="mt-3 grid grid-cols-2 gap-2">
-          <button type="button" data-in${dis} class="${btnBase} ${inCls}">${hadir ? '✓ Check-in' : 'Check-in'}</button>
-          <button type="button" data-out${dis}${hadir ? '' : ' disabled'} class="${btnBase} ${outCls}">Check-out</button>
-        </div>
-        ${sel}
+        ${actionArea}
         ${detail}${clear}
       </li>`;
   }
@@ -1417,41 +1430,66 @@ async function pageAbsensi(view, ctx) {
     return true;
   }
 
-  // jam pulang default 19:00 kalau tidak di-check-out
   const payload = (empId, r) => ({
     employee_id: empId,
     work_date: date,
     status: r.status,
     check_in: r.status === 'hadir' ? r.check_in : null,
-    check_out: r.status === 'hadir' ? (r.check_out || (r.check_in < DEFAULT_OUT ? DEFAULT_OUT : null)) : null,
+    check_out: r.status === 'hadir' ? r.check_out || null : null,
     note: r.note ?? null,
   });
 
   async function checkIn(empId) {
     if (pending.has(empId)) return;
     const cur = att.get(empId);
-    if (cur?.status === 'hadir') return toast('Sudah check-in.');
-    const t = date === maxDate ? nowWib() : settings.work_start;
-    await save([payload(empId, { status: 'hadir', check_in: t, check_out: null, note: null })]);
+    
+    // Dapatkan jam saat ini dalam format WIB (HH:mm)
+    const now = new Date();
+    const timeStr = new Intl.DateTimeFormat('en-GB', { timeZone: WIB_TZ, hour: '2-digit', minute: '2-digit' }).format(now);
+
+    await save([payload(empId, {
+      status: 'hadir',
+      check_in: timeStr,
+      check_out: cur?.check_out || '19:00',
+      note: cur?.note
+    })]);
   }
 
   async function checkOut(empId) {
-    const cur = att.get(empId);
-    if (!cur || cur.status !== 'hadir' || pending.has(empId)) return;
-    const t = date === maxDate ? nowWib() : DEFAULT_OUT;
-    if (t < cur.check_in) return toast('Jam pulang tidak boleh lebih awal dari jam masuk.', 'error');
-    await save([payload(empId, { ...cur, check_out: t })]);
-  }
-
-  async function setAbsent(empId, status) {
     if (pending.has(empId)) return;
     const cur = att.get(empId);
+    if (!cur || cur.status !== 'hadir') return;
+    
+    // Dapatkan jam saat ini untuk check-out
+    const now = new Date();
+    const timeStr = new Intl.DateTimeFormat('en-GB', { timeZone: WIB_TZ, hour: '2-digit', minute: '2-digit' }).format(now);
+
+    await save([payload(empId, {
+      ...cur,
+      check_out: timeStr
+    })]);
+  }
+
+  async function setStatus(empId, status) {
+    if (pending.has(empId)) return;
+    const cur = att.get(empId);
+
     if (!status) {
-      if (cur && cur.status !== 'hadir') return clearRecord(empId);
-      return updateRow(empId);
+      return; // Jika pilih "Pilih Keterangan..." abaikan
     }
+
     if (cur?.status === status) return;
-    await save([payload(empId, { status, check_in: null, check_out: null, note: cur?.note })]);
+
+    if (status === 'hadir') {
+      await checkIn(empId);
+    } else {
+      await save([payload(empId, {
+        status,
+        check_in: null,
+        check_out: null,
+        note: cur?.note
+      })]);
+    }
   }
 
   async function setTime(empId, field, value) {
@@ -1486,7 +1524,7 @@ async function pageAbsensi(view, ctx) {
       confirmLabel: 'Kosongkan',
       danger: true,
     });
-    if (!ok) return updateRow(empId);
+    if (!ok) return;
     const d = date;
     const { data, error } = await supabase
       .from('attendances')
@@ -1509,9 +1547,9 @@ async function pageAbsensi(view, ctx) {
     const targets = visible().filter((e) => !att.has(e.id) && !pending.has(e.id));
     if (!targets.length) return toast('Semua sudah terisi.');
     const ok = await save(
-      targets.map((e) => payload(e.id, { status: 'hadir', check_in: settings.work_start, check_out: null, note: null })),
+      targets.map((e) => payload(e.id, { status: 'hadir', check_in: settings.work_start, check_out: '19:00', note: null })),
     );
-    if (ok) toast(`${targets.length} karyawan ditandai hadir (jam masuk ${settings.work_start}, pulang ${DEFAULT_OUT}).`, 'success');
+    if (ok) toast(`${targets.length} karyawan ditandai hadir (jam masuk ${settings.work_start}).`, 'success');
   }
 
   async function loadDate() {
@@ -1546,7 +1584,7 @@ async function pageAbsensi(view, ctx) {
   async function init() {
     body.innerHTML = '<p class="py-10 text-center text-sm text-slate-400">Memuat…</p>';
     const [d, e, s] = await Promise.all([
-      supabase.from('departments').select('id, name, is_active').eq('leader_id', leaderId).order('name'),
+      supabase.from('departments').select('id, name').eq('leader_id', leaderId).order('name'),
       supabase.from('employees').select('id, nip, full_name, department_id').eq('leader_id', leaderId).eq('is_active', true).order('full_name'),
       supabase.from('leader_settings').select('work_start, work_end, late_tolerance_minutes').eq('leader_id', leaderId).maybeSingle(),
     ]);
@@ -1556,9 +1594,8 @@ async function pageAbsensi(view, ctx) {
       body.querySelector('[data-act="retry"]').addEventListener('click', init);
       return;
     }
-    depts = (d.data ?? []).filter((x) => x.is_active);
-    const okDept = new Set(depts.map((x) => x.id));
-    emps = (e.data ?? []).filter((x) => okDept.has(x.department_id));
+    depts = d.data ?? [];
+    emps = e.data ?? [];
     if (s.data) {
       settings = { work_start: hhmm(s.data.work_start), work_end: hhmm(s.data.work_end), late_tolerance_minutes: s.data.late_tolerance_minutes };
     }
@@ -1609,17 +1646,19 @@ async function pageAbsensi(view, ctx) {
     q('#a-list').addEventListener('click', (ev) => {
       const li = ev.target.closest('li[data-emp]');
       if (!li) return;
-      if (ev.target.closest('[data-in]')) return checkIn(li.dataset.emp);
-      if (ev.target.closest('[data-out]')) return checkOut(li.dataset.emp);
+      const st = ev.target.closest('[data-status]');
+      if (st) return setStatus(li.dataset.emp, st.dataset.status);
+      if (ev.target.closest('[data-act="checkin"]')) return checkIn(li.dataset.emp);
+      if (ev.target.closest('[data-act="checkout"]')) return checkOut(li.dataset.emp);
       if (ev.target.closest('[data-clear]')) clearRecord(li.dataset.emp);
     });
     q('#a-list').addEventListener('change', (ev) => {
       const el = ev.target;
       const li = el.closest('li[data-emp]');
       if (!li) return;
-      if (el.hasAttribute('data-sel')) return setAbsent(li.dataset.emp, el.value);
       if (el.dataset.field === 'check_in' || el.dataset.field === 'check_out') setTime(li.dataset.emp, el.dataset.field, el.value);
       else if (el.dataset.field === 'note') setNote(li.dataset.emp, el.value);
+      else if (el.dataset.field === 'status') setStatus(li.dataset.emp, el.value);
     });
 
     renderChips();
