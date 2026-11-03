@@ -1,0 +1,522 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="theme-color" content="#ffffff">
+  <title>Absensi Karyawan</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+
+  <!-- Tailwind via CDN (praktis untuk satu file). Kalau nanti mau lebih ringan/cepat,
+       bisa diganti hasil build Tailwind CLI di GitHub Actions. -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: { extend: { fontFamily: { sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'] } } }
+    };
+  </script>
+</head>
+<body class="bg-slate-50 font-sans text-slate-900 antialiased">
+  <div id="app" class="min-h-[100dvh]">
+    <div class="flex min-h-[100dvh] items-center justify-center text-sm text-slate-400">Memuat…</div>
+  </div>
+  <noscript>Aplikasi ini membutuhkan JavaScript.</noscript>
+
+<script type="module">
+/* ==========================================================================
+   ABSENSI KARYAWAN - frontend satu file
+   Backend: Supabase (Postgres + RLS + Edge Function admin-users)
+   Daftar isi:
+     1. CONFIG        4. AUTH          7. LAYOUT
+     2. UI HELPERS    5. ROUTER        8. ROUTES (menu per role)
+     3. ICONS         6. HALAMAN       9. APP + MAIN
+   ========================================================================== */
+
+/* ============================== 1. CONFIG ============================== */
+// Isi dari Supabase: tombol "Connect" di atas dashboard, atau Project Settings -> API Keys.
+// Hanya URL dan publishable/anon key. JANGAN PERNAH isi secret / service_role key di sini.
+const SUPABASE_URL = 'ISI_PROJECT_URL_DI_SINI';
+const SUPABASE_ANON_KEY = 'ISI_PUBLISHABLE_KEY_DI_SINI';
+
+let supabase = null; // diisi di MAIN setelah library berhasil dimuat
+
+/* ============================ 2. UI HELPERS ============================ */
+// Semua teks dinamis WAJIB lewat esc() kalau dimasukkan ke innerHTML.
+const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ESC_MAP[c]);
+
+const TOAST_TONE = {
+  info: 'bg-slate-900 text-white',
+  success: 'bg-emerald-600 text-white',
+  error: 'bg-red-600 text-white',
+};
+let toastHost;
+function toast(message, type = 'info') {
+  if (!toastHost) {
+    toastHost = document.createElement('div');
+    toastHost.className = 'pointer-events-none fixed inset-x-0 top-3 z-50 flex flex-col items-center gap-2 px-4';
+    toastHost.setAttribute('role', 'status');
+    toastHost.setAttribute('aria-live', 'polite');
+    document.body.appendChild(toastHost);
+  }
+  const el = document.createElement('div');
+  el.className = `pointer-events-auto max-w-sm rounded-lg px-4 py-2.5 text-sm shadow-lg ${TOAST_TONE[type] ?? TOAST_TONE.info}`;
+  el.textContent = message;
+  toastHost.appendChild(el);
+  setTimeout(() => el.remove(), 3500);
+}
+
+const CARD = 'w-full max-w-sm rounded-xl border border-slate-200 bg-white p-6 text-center shadow-sm';
+const BTN_PRIMARY =
+  'rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2';
+const BTN_GHOST =
+  'rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2';
+
+function showFatal(root, title, detail) {
+  root.innerHTML = `
+    <div class="flex min-h-[100dvh] items-center justify-center px-4">
+      <div class="${CARD}">
+        <h1 class="text-base font-semibold text-slate-900">${esc(title)}</h1>
+        <p class="mt-2 text-sm text-slate-500">${esc(detail)}</p>
+      </div>
+    </div>`;
+}
+
+function showError(root, { message, onRetry, onLogout }) {
+  root.innerHTML = `
+    <div class="flex min-h-[100dvh] items-center justify-center px-4">
+      <div class="${CARD}">
+        <h1 class="text-base font-semibold text-slate-900">Terjadi masalah</h1>
+        <p class="mt-2 text-sm text-slate-500">${esc(message)}</p>
+        <div class="mt-5 flex justify-center gap-2">
+          <button type="button" data-act="retry" class="${BTN_PRIMARY}">Coba lagi</button>
+          <button type="button" data-act="logout" class="${BTN_GHOST}">Keluar</button>
+        </div>
+      </div>
+    </div>`;
+  root.querySelector('[data-act="retry"]').addEventListener('click', onRetry);
+  root.querySelector('[data-act="logout"]').addEventListener('click', onLogout);
+}
+
+/* =============================== 3. ICONS =============================== */
+// Ikon outline sederhana (stroke mengikuti warna teks via currentColor).
+const ICON_PATHS = {
+  check: '<path d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/>',
+  user: '<path d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.5 20.12a7.5 7.5 0 0 1 15 0A17.93 17.93 0 0 1 12 21.75c-2.68 0-5.22-.58-7.5-1.63Z"/>',
+  users: '<circle cx="9" cy="8" r="3.25"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><path d="M16 5.2a3.25 3.25 0 0 1 0 5.6M18 14.3c1.8.8 3 2.6 3 4.7"/>',
+  grid: '<rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"/>',
+  chart: '<path d="M3 3v18h18"/><path d="M8 17v-5M12.5 17V8M17 17v-8"/>',
+  sliders: '<path d="M4 6h8M16 6h4M4 12h2M10 12h10M4 18h10M18 18h2"/><circle cx="14" cy="6" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="16" cy="18" r="2"/>',
+  calendar: '<rect x="3.5" y="5" width="17" height="15.5" rx="2"/><path d="M8 3v4M16 3v4M3.5 10h17"/>',
+  logout: '<path d="M15.75 9V5.25A2.25 2.25 0 0 0 13.5 3h-6a2.25 2.25 0 0 0-2.25 2.25v13.5A2.25 2.25 0 0 0 7.5 21h6a2.25 2.25 0 0 0 2.25-2.25V15m3 0 3-3m0 0-3-3m3 3H9"/>',
+  eye: '<path d="M2.5 12s3.5-6.5 9.5-6.5S21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="3"/>',
+  'eye-off': '<path d="M2.5 12s3.5-6.5 9.5-6.5S21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="3"/><path d="M4 4l16 16"/>',
+};
+function icon(name, cls = 'size-6') {
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="${cls}">${ICON_PATHS[name] ?? ''}</svg>`;
+}
+
+/* =============================== 4. AUTH =============================== */
+function signIn(email, password) {
+  return supabase.auth.signInWithPassword({ email, password });
+}
+
+// Logout. UI login ditampilkan oleh listener SIGNED_OUT di APP (satu jalur saja).
+async function signOut() {
+  await supabase.auth.signOut();
+}
+
+// Return { session: null, profile: null } kalau belum login.
+// profile = null kalau sudah login tapi belum punya baris di public.profiles.
+async function loadSession() {
+  const { data, error: sessionError } = await supabase.auth.getSession();
+  if (sessionError) throw sessionError;
+  const session = data.session;
+  if (!session) return { session: null, profile: null };
+
+  const { data: profile, error } = await supabase
+    .from('profiles')
+    .select('id, full_name, role, is_active')
+    .eq('id', session.user.id)
+    .maybeSingle();
+  if (error) throw error;
+
+  return { session, profile };
+}
+
+/* ============================== 5. ROUTER ============================== */
+// Hash router sederhana (cocok untuk GitHub Pages, tanpa konfigurasi server).
+let onHashChange = null;
+
+function stopRouter() {
+  if (onHashChange) window.removeEventListener('hashchange', onHashChange);
+  onHashChange = null;
+}
+
+function startRouter({ items, ctx, view, onNavigate }) {
+  stopRouter();
+
+  async function resolve() {
+    const path = location.hash.replace(/^#/, '');
+    const item = items.find((i) => i.path === path);
+
+    // Path tidak dikenal atau bukan jatah role ini -> arahkan ke menu pertama
+    if (!item) {
+      location.replace(`#${items[0].path}`);
+      return;
+    }
+
+    onNavigate(item);
+    view.replaceChildren();
+    try {
+      await item.render(view, ctx);
+    } catch (e) {
+      console.error(e);
+      view.innerHTML =
+        '<div class="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">Halaman gagal dimuat. Coba muat ulang.</div>';
+    }
+    window.scrollTo(0, 0);
+  }
+
+  onHashChange = resolve;
+  window.addEventListener('hashchange', onHashChange);
+  resolve();
+}
+
+/* ============================== 6. HALAMAN ============================== */
+
+// --- Placeholder (diganti halaman asli di tahap berikutnya) ---
+function stubPage(title, description) {
+  return async (view) => {
+    view.innerHTML = `
+      <div class="max-w-3xl">
+        <div class="rounded-xl border border-dashed border-slate-300 bg-white p-8 text-center">
+          <p class="text-sm font-medium text-slate-900">${esc(title)}</p>
+          <p class="mt-1 text-sm text-slate-500">${esc(description)}</p>
+          <p class="mt-4 text-xs text-slate-400">Halaman ini dibangun di tahap berikutnya.</p>
+        </div>
+      </div>`;
+  };
+}
+
+// --- Login ---
+const INPUT =
+  'block w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-base text-slate-900 placeholder-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 sm:text-sm';
+
+function friendlyLoginError(error) {
+  const msg = String(error?.message ?? '');
+  if (error?.status === 429) return 'Terlalu banyak percobaan. Coba lagi beberapa menit lagi.';
+  if (/invalid login credentials/i.test(msg)) return 'Email atau password salah.';
+  if (/email not confirmed/i.test(msg)) return 'Email belum dikonfirmasi. Hubungi super admin.';
+  if (error?.name === 'AuthRetryableFetchError' || /failed to fetch|network/i.test(msg)) {
+    return 'Tidak bisa terhubung ke server. Periksa koneksi internet.';
+  }
+  return 'Gagal masuk. Coba lagi.';
+}
+
+function renderLogin(root, { notice = '', onLoggedIn }) {
+  root.innerHTML = `
+    <div class="flex min-h-[100dvh] items-center justify-center px-4 py-10">
+      <div class="w-full max-w-sm">
+        <div class="mb-8 text-center">
+          <div class="mx-auto mb-4 flex size-12 items-center justify-center rounded-xl bg-indigo-600 text-white">
+            ${icon('check', 'size-6')}
+          </div>
+          <h1 class="text-xl font-semibold text-slate-900">Absensi Karyawan</h1>
+          <p class="mt-1 text-sm text-slate-500">Masuk untuk melanjutkan</p>
+        </div>
+
+        <form id="login-form" novalidate class="space-y-4 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+          ${notice ? `<p class="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">${esc(notice)}</p>` : ''}
+
+          <div>
+            <label for="email" class="mb-1.5 block text-sm font-medium text-slate-700">Email</label>
+            <input id="email" name="email" type="email" inputmode="email" autocomplete="username"
+                   autocapitalize="none" spellcheck="false" required placeholder="nama@perusahaan.com" class="${INPUT}">
+          </div>
+
+          <div>
+            <label for="password" class="mb-1.5 block text-sm font-medium text-slate-700">Password</label>
+            <div class="relative">
+              <input id="password" name="password" type="password" autocomplete="current-password"
+                     required placeholder="Password" class="${INPUT} pr-11">
+              <button type="button" id="toggle-pw" aria-label="Tampilkan password"
+                      class="absolute inset-y-0 right-0 flex w-11 items-center justify-center text-slate-400 hover:text-slate-600 focus:outline-none focus-visible:text-indigo-600">
+                <span data-eye>${icon('eye', 'size-5')}</span>
+              </button>
+            </div>
+          </div>
+
+          <p id="login-error" role="alert" class="hidden rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700"></p>
+
+          <button type="submit" id="login-submit"
+                  class="flex w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60">
+            <svg id="login-spinner" class="hidden size-4 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-opacity=".3" stroke-width="3"/>
+              <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+            </svg>
+            <span id="login-label">Masuk</span>
+          </button>
+        </form>
+
+        <p class="mt-6 text-center text-xs text-slate-400">Lupa password? Hubungi super admin.</p>
+      </div>
+    </div>`;
+
+  const form = root.querySelector('#login-form');
+  const emailEl = form.elements.email;
+  const passEl = form.elements.password;
+  const errorEl = root.querySelector('#login-error');
+  const submitEl = root.querySelector('#login-submit');
+  const labelEl = root.querySelector('#login-label');
+  const spinnerEl = root.querySelector('#login-spinner');
+  const toggleEl = root.querySelector('#toggle-pw');
+
+  const setError = (msg) => {
+    errorEl.textContent = msg;
+    errorEl.classList.toggle('hidden', !msg);
+  };
+  const setLoading = (on) => {
+    submitEl.disabled = on;
+    spinnerEl.classList.toggle('hidden', !on);
+    labelEl.textContent = on ? 'Memproses…' : 'Masuk';
+  };
+
+  toggleEl.addEventListener('click', () => {
+    const show = passEl.type === 'password';
+    passEl.type = show ? 'text' : 'password';
+    toggleEl.setAttribute('aria-label', show ? 'Sembunyikan password' : 'Tampilkan password');
+    toggleEl.querySelector('[data-eye]').innerHTML = icon(show ? 'eye-off' : 'eye', 'size-5');
+  });
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (submitEl.disabled) return;
+
+    const email = emailEl.value.trim();
+    const password = passEl.value;
+    if (!email || !password) {
+      setError('Email dan password wajib diisi.');
+      return;
+    }
+
+    setError('');
+    setLoading(true);
+    const { error } = await signIn(email, password);
+    if (error) {
+      setLoading(false);
+      setError(friendlyLoginError(error));
+      passEl.select();
+      return;
+    }
+    onLoggedIn();
+  });
+
+  emailEl.focus();
+}
+
+/* ============================== 7. LAYOUT ============================== */
+// Mobile: header atas + bottom nav. Desktop (md+): sidebar kiri.
+const ROLE_LABEL = { super_admin: 'Super Admin', leader: 'Leader' };
+const SIDE_ON = ['bg-indigo-50', 'text-indigo-700'];
+const SIDE_OFF = ['text-slate-600', 'hover:bg-slate-50', 'hover:text-slate-900'];
+const BOTTOM_ON = ['text-indigo-600'];
+const BOTTOM_OFF = ['text-slate-500'];
+
+const initials = (name) =>
+  String(name ?? '')
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((w) => w[0]?.toUpperCase() ?? '')
+    .join('') || '?';
+
+function paintNav(el, on, onCls, offCls) {
+  el.classList.remove(...(on ? offCls : onCls));
+  el.classList.add(...(on ? onCls : offCls));
+  if (on) el.setAttribute('aria-current', 'page');
+  else el.removeAttribute('aria-current');
+}
+
+function renderShell(root, { profile, items, onLogout }) {
+  const name = esc(profile.full_name);
+  const role = esc(ROLE_LABEL[profile.role] ?? profile.role);
+  const ini = esc(initials(profile.full_name));
+
+  const sideLinks = items
+    .map(
+      (i) => `
+      <a href="#${i.path}" data-path="${i.path}"
+         class="side-link flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium ${SIDE_OFF.join(' ')}">
+        ${icon(i.icon, 'size-5')}<span>${esc(i.label)}</span>
+      </a>`,
+    )
+    .join('');
+
+  const bottomLinks = items
+    .map(
+      (i) => `
+      <a href="#${i.path}" data-path="${i.path}"
+         class="bottom-link flex flex-col items-center gap-0.5 px-1 py-2 text-[11px] font-medium ${BOTTOM_OFF.join(' ')}">
+        ${icon(i.icon, 'size-6')}<span class="max-w-full truncate">${esc(i.label)}</span>
+      </a>`,
+    )
+    .join('');
+
+  root.innerHTML = `
+    <div class="min-h-[100dvh] md:flex">
+      <aside class="hidden border-r border-slate-200 bg-white md:fixed md:inset-y-0 md:flex md:w-64 md:flex-col">
+        <div class="flex h-16 items-center gap-3 border-b border-slate-100 px-5">
+          <div class="flex size-8 items-center justify-center rounded-lg bg-indigo-600 text-white">${icon('check', 'size-5')}</div>
+          <span class="text-sm font-semibold text-slate-900">Absensi Karyawan</span>
+        </div>
+        <nav class="flex-1 space-y-1 overflow-y-auto px-3 py-4" aria-label="Menu utama">${sideLinks}</nav>
+        <div class="border-t border-slate-100 p-3">
+          <div class="flex items-center gap-3 rounded-lg px-2 py-2">
+            <div class="flex size-9 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-semibold text-slate-600">${ini}</div>
+            <div class="min-w-0 flex-1">
+              <p class="truncate text-sm font-medium text-slate-900">${name}</p>
+              <p class="truncate text-xs text-slate-500">${role}</p>
+            </div>
+            <button type="button" data-logout aria-label="Keluar" title="Keluar"
+                    class="rounded-lg p-2 text-slate-400 hover:bg-slate-50 hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500">
+              ${icon('logout', 'size-5')}
+            </button>
+          </div>
+        </div>
+      </aside>
+
+      <div class="flex min-w-0 flex-1 flex-col md:pl-64">
+        <header class="sticky top-0 z-20 flex h-14 items-center justify-between border-b border-slate-200 bg-white/90 px-4 backdrop-blur md:px-8">
+          <h1 id="page-title" class="truncate text-base font-semibold text-slate-900"></h1>
+          <div class="flex items-center gap-1 md:hidden">
+            <div class="mr-1 text-right leading-tight">
+              <p class="max-w-[8rem] truncate text-xs font-medium text-slate-900">${name}</p>
+              <p class="text-[11px] text-slate-500">${role}</p>
+            </div>
+            <button type="button" data-logout aria-label="Keluar"
+                    class="rounded-lg p-2 text-slate-500 hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500">
+              ${icon('logout', 'size-5')}
+            </button>
+          </div>
+        </header>
+
+        <main id="view" tabindex="-1" class="flex-1 px-4 py-5 pb-28 focus:outline-none md:px-8 md:py-8 md:pb-8"></main>
+      </div>
+
+      <nav class="fixed inset-x-0 bottom-0 z-30 border-t border-slate-200 bg-white pb-[env(safe-area-inset-bottom)] md:hidden" aria-label="Menu utama">
+        <div class="grid" style="grid-template-columns:repeat(${items.length},minmax(0,1fr))">${bottomLinks}</div>
+      </nav>
+    </div>`;
+
+  root.querySelectorAll('[data-logout]').forEach((b) => b.addEventListener('click', onLogout));
+
+  const titleEl = root.querySelector('#page-title');
+  const sideEls = [...root.querySelectorAll('.side-link')];
+  const bottomEls = [...root.querySelectorAll('.bottom-link')];
+
+  function setActive(item) {
+    titleEl.textContent = item.label;
+    document.title = `${item.label} · Absensi Karyawan`;
+    sideEls.forEach((el) => paintNav(el, el.dataset.path === item.path, SIDE_ON, SIDE_OFF));
+    bottomEls.forEach((el) => paintNav(el, el.dataset.path === item.path, BOTTOM_ON, BOTTOM_OFF));
+  }
+
+  return { view: root.querySelector('#view'), setActive };
+}
+
+/* ============================== 8. ROUTES ============================== */
+// Satu sumber untuk menu + route per role. Urutan = urutan menu; yang pertama = halaman default.
+// Akses data yang sebenarnya tetap dijaga RLS di database, ini hanya mengatur tampilan.
+const ROUTES = {
+  leader: [
+    { path: '/absensi', label: 'Absensi', icon: 'check', render: stubPage('Absensi', 'Input absensi harian anggota tim.') },
+    { path: '/karyawan', label: 'Karyawan', icon: 'user', render: stubPage('Karyawan', 'Data master karyawan.') },
+    { path: '/bagian', label: 'Bagian', icon: 'grid', render: stubPage('Bagian', 'Data master bagian.') },
+    { path: '/report', label: 'Report', icon: 'chart', render: stubPage('Report', 'Report absensi bulanan, export Excel dan PDF.') },
+    { path: '/pengaturan', label: 'Pengaturan', icon: 'sliders', render: stubPage('Pengaturan', 'Jam kerja dan toleransi keterlambatan.') },
+  ],
+  super_admin: [
+    { path: '/leader', label: 'Leader', icon: 'users', render: stubPage('Leader', 'Kelola akun leader.') },
+    { path: '/report', label: 'Report', icon: 'chart', render: stubPage('Report', 'Report absensi lintas leader.') },
+    { path: '/libur', label: 'Hari Libur', icon: 'calendar', render: stubPage('Hari Libur', 'Libur nasional dan cuti bersama.') },
+  ],
+};
+const routesFor = (role) => ROUTES[role] ?? [];
+
+/* ============================ 9. APP + MAIN ============================ */
+const root = document.getElementById('app');
+let loginNotice = '';
+
+function showLogin() {
+  stopRouter();
+  document.title = 'Masuk · Absensi Karyawan';
+  history.replaceState(null, '', location.pathname + location.search); // buang hash lama
+  renderLogin(root, { notice: loginNotice, onLoggedIn: boot });
+}
+
+async function boot() {
+  loginNotice = '';
+
+  let result;
+  try {
+    result = await loadSession();
+  } catch (e) {
+    console.error(e);
+    showError(root, {
+      message: 'Data akun gagal dimuat. Periksa koneksi internet lalu coba lagi.',
+      onRetry: boot,
+      onLogout: () => signOut().finally(showLogin),
+    });
+    return;
+  }
+
+  if (!result.session) return showLogin();
+
+  const { profile } = result;
+  const items = profile ? routesFor(profile.role) : [];
+
+  if (!profile || !profile.is_active || items.length === 0) {
+    loginNotice = !profile
+      ? 'Akun belum terdaftar di aplikasi. Hubungi super admin.'
+      : 'Akun tidak aktif. Hubungi super admin.';
+    await signOut(); // listener SIGNED_OUT juga menampilkan login + notice
+    showLogin();
+    return;
+  }
+
+  const shell = renderShell(root, { profile, items, onLogout: () => signOut() });
+  startRouter({ items, ctx: { profile }, view: shell.view, onNavigate: shell.setActive });
+}
+
+async function start() {
+  // Jangan panggil method supabase langsung di dalam callback ini (bisa deadlock) -> tunda dengan setTimeout.
+  supabase.auth.onAuthStateChange((event) => {
+    if (event === 'SIGNED_OUT') setTimeout(showLogin, 0);
+  });
+  await boot();
+}
+
+const configMissing = (v) => !v || v.includes('ISI_');
+
+if (configMissing(SUPABASE_URL) || configMissing(SUPABASE_ANON_KEY)) {
+  showFatal(root, 'Konfigurasi belum diisi', 'Isi SUPABASE_URL dan SUPABASE_ANON_KEY di bagian CONFIG pada index.html.');
+} else {
+  try {
+    const { createClient } = await import('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm');
+    supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      auth: { persistSession: true, autoRefreshToken: true },
+    });
+    await start();
+  } catch (e) {
+    console.error(e);
+    showFatal(root, 'Aplikasi gagal dimuat', 'Periksa koneksi internet, lalu muat ulang halaman.');
+  }
+}
+</script>
+</body>
+</html>
