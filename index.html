@@ -186,6 +186,8 @@ const ICON_PATHS = {
   grid: '<rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"/>',
   chart: '<path d="M3 3v18h18"/><path d="M8 17v-5M12.5 17V8M17 17v-8"/>',
   x: '<path d="M6 6l12 12M18 6 6 18"/>',
+  'chevron-left': '<path d="M15 6l-6 6 6 6"/>',
+  'chevron-right': '<path d="M9 6l6 6-6 6"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/>',
   sliders: '<path d="M4 6h8M16 6h4M4 12h2M10 12h10M4 18h10M18 18h2"/><circle cx="14" cy="6" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="16" cy="18" r="2"/>',
@@ -905,10 +907,6 @@ async function pageKaryawan(view, ctx) {
       </td>
     </tr>`;
 
-  const chip = (id, label, count, active) => `
-    <button type="button" data-dept="${esc(id)}" aria-pressed="${active}"
-            class="shrink-0 whitespace-nowrap rounded-full border px-3 py-1.5 text-sm font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${active ? 'border-indigo-600 bg-indigo-600 text-white' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'}">${esc(label)} <span class="${active ? 'text-indigo-100' : 'text-slate-400'}">${count}</span></button>`;
-
   function renderList() {
     const q = f.q.trim().toLowerCase();
     const names = new Map(depts.map((d) => [d.id, d.name]));
@@ -1107,6 +1105,490 @@ async function pageKaryawan(view, ctx) {
   await load();
 }
 
+// --- Absensi harian + Pengaturan jam kerja (leader) ---
+const WIB_TZ = 'Asia/Jakarta';
+const BACKDATE_DAYS = 7; // harus sama dengan batas di RLS (today_wib() - 7)
+const HARI = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+const BULAN = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
+
+// Tanggal hari ini versi WIB (sama dengan today_wib() di database)
+function todayWib() {
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat('en-US', { timeZone: WIB_TZ, year: 'numeric', month: '2-digit', day: '2-digit' })
+      .formatToParts(new Date())
+      .map((x) => [x.type, x.value]),
+  );
+  return `${p.year}-${p.month}-${p.day}`;
+}
+function addDays(ymd, n) {
+  const d = new Date(`${ymd}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+const weekday = (ymd) => new Date(`${ymd}T00:00:00Z`).getUTCDay();
+function fmtDate(ymd) {
+  const [y, m, d] = ymd.split('-').map(Number);
+  return `${HARI[weekday(ymd)]}, ${d} ${BULAN[m - 1]} ${y}`;
+}
+const hhmm = (t) => (t ? String(t).slice(0, 5) : '');
+
+const STATUS_META = {
+  hadir: { label: 'Hadir', on: 'border-emerald-600 bg-emerald-600 text-white' },
+  izin: { label: 'Izin', on: 'border-amber-500 bg-amber-500 text-white' },
+  sakit: { label: 'Sakit', on: 'border-sky-600 bg-sky-600 text-white' },
+  alpa: { label: 'Alpa', on: 'border-red-600 bg-red-600 text-white' },
+  cuti: { label: 'Cuti', on: 'border-violet-600 bg-violet-600 text-white' },
+};
+const STATUS_KEYS = Object.keys(STATUS_META);
+const ATT_COLS = 'id, employee_id, work_date, status, check_in, check_out, late_minutes, note';
+const ATT_ERR = {
+  '42501': `Tanggal ini sudah dikunci (maksimal ${BACKDATE_DAYS} hari ke belakang) atau karyawan tidak aktif.`,
+  '23514': 'Data jam tidak valid.',
+  '23503': 'Karyawan tidak ditemukan.',
+};
+const normRec = (r) => ({ ...r, check_in: hhmm(r.check_in), check_out: hhmm(r.check_out) });
+
+// Chip filter bagian (dipakai di Karyawan dan Absensi)
+function chip(id, label, count, active) {
+  return `
+    <button type="button" data-dept="${esc(id)}" aria-pressed="${active}"
+            class="shrink-0 whitespace-nowrap rounded-full border px-3 py-1.5 text-sm font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${active ? 'border-indigo-600 bg-indigo-600 text-white' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'}">${esc(label)} <span class="${active ? 'text-indigo-100' : 'text-slate-400'}">${count}</span></button>`;
+}
+
+async function pageAbsensi(view, ctx) {
+  const leaderId = ctx.profile.id;
+  const maxDate = todayWib();
+  const minDate = addDays(maxDate, -BACKDATE_DAYS);
+  let date = maxDate;
+  let depts = [];
+  let emps = [];
+  let settings = { work_start: '08:00', work_end: '17:00', late_tolerance_minutes: 0 };
+  let att = new Map(); // employee_id -> record pada tanggal terpilih
+  let holiday = null;
+  const pending = new Set(); // karyawan yang sedang disimpan
+  const f = { dept: '' };
+
+  view.innerHTML = '<div id="a-body" class="mx-auto max-w-4xl"></div>';
+  const body = view.querySelector('#a-body');
+  const q = (sel) => body.querySelector(sel);
+
+  const deptNames = () => new Map(depts.map((d) => [d.id, d.name]));
+  const visible = () => emps.filter((e) => !f.dept || e.department_id === f.dept);
+
+  function rowHtml(e) {
+    const r = att.get(e.id);
+    const busy = pending.has(e.id);
+    const dis = busy ? ' disabled' : '';
+    const dn = deptNames().get(e.department_id) ?? '—';
+
+    let badge = '';
+    if (busy) badge = '<span class="shrink-0 text-xs text-slate-400">Menyimpan…</span>';
+    else if (!r) badge = '<span class="shrink-0 rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-medium text-slate-500">Belum diisi</span>';
+    else if (r.status === 'hadir' && r.late_minutes > 0)
+      badge = `<span class="shrink-0 rounded-full bg-amber-50 px-2.5 py-0.5 text-xs font-medium text-amber-700">Terlambat ${esc(r.late_minutes)} mnt</span>`;
+    else if (r.status === 'hadir' && r.late_minutes === 0)
+      badge = `<span class="shrink-0 rounded-full ${BADGE_ON} px-2.5 py-0.5 text-xs font-medium">Tepat waktu</span>`;
+
+    const buttons = STATUS_KEYS.map((k) => {
+      const on = r?.status === k;
+      return `<button type="button" data-status="${k}" aria-pressed="${on}"${dis}
+        class="rounded-lg border px-1 py-2 text-xs font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:cursor-not-allowed sm:text-sm ${on ? STATUS_META[k].on : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'}">${STATUS_META[k].label}</button>`;
+    }).join('');
+
+    let detail = '';
+    if (r?.status === 'hadir') {
+      detail = `
+        <div class="mt-3 grid grid-cols-2 gap-3">
+          <label class="block"><span class="mb-1 block text-xs text-slate-500">Jam masuk</span>
+            <input type="time" data-field="check_in" value="${esc(r.check_in)}"${dis} class="${INPUT}"></label>
+          <label class="block"><span class="mb-1 block text-xs text-slate-500">Jam pulang</span>
+            <input type="time" data-field="check_out" value="${esc(r.check_out)}"${dis} class="${INPUT}"></label>
+        </div>`;
+    } else if (r) {
+      detail = `
+        <div class="mt-3">
+          <label class="block"><span class="mb-1 block text-xs text-slate-500">Catatan (opsional)</span>
+            <input type="text" data-field="note" maxlength="200" value="${esc(r.note ?? '')}"${dis} class="${INPUT}"></label>
+        </div>`;
+    }
+    const clear = r && !busy
+      ? '<div class="mt-2 text-right"><button type="button" data-clear class="text-xs text-slate-400 underline hover:text-slate-600">Kosongkan</button></div>'
+      : '';
+
+    return `
+      <li data-emp="${esc(e.id)}" class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm${busy ? ' opacity-70' : ''}">
+        <div class="flex items-start justify-between gap-3">
+          <div class="min-w-0">
+            <p class="truncate text-sm font-semibold text-slate-900">${esc(e.full_name)}</p>
+            <p class="truncate text-xs text-slate-500">${e.nip ? esc(e.nip) + ' · ' : ''}${esc(dn)}</p>
+          </div>
+          ${badge}
+        </div>
+        <div class="mt-3 grid grid-cols-5 gap-1.5" role="group" aria-label="Status ${esc(e.full_name)}">${buttons}</div>
+        ${detail}${clear}
+      </li>`;
+  }
+
+  function updateRow(id) {
+    const emp = emps.find((e) => e.id === id);
+    const li = [...body.querySelectorAll('li[data-emp]')].find((x) => x.dataset.emp === id);
+    if (emp && li) li.outerHTML = rowHtml(emp);
+  }
+
+  function renderSummary() {
+    const c = { hadir: 0, izin: 0, sakit: 0, alpa: 0, cuti: 0, belum: 0 };
+    emps.forEach((e) => {
+      const r = att.get(e.id);
+      if (r) c[r.status] += 1;
+      else c.belum += 1;
+    });
+    const tile = (label, n) => `
+      <div class="rounded-lg border border-slate-200 bg-white px-3 py-2">
+        <p class="text-xs text-slate-500">${label}</p>
+        <p class="text-lg font-semibold text-slate-900">${n}</p>
+      </div>`;
+    q('#a-summary').innerHTML =
+      STATUS_KEYS.map((k) => tile(STATUS_META[k].label, c[k])).join('') + tile('Belum', c.belum);
+    q('#a-count').textContent = `${visible().length} karyawan · ${c.belum} belum diisi`;
+  }
+
+  function renderChips() {
+    q('#a-chips').innerHTML =
+      chip('', 'Semua', emps.length, !f.dept) +
+      depts.map((d) => chip(d.id, d.name, emps.filter((e) => e.department_id === d.id).length, f.dept === d.id)).join('');
+  }
+
+  function renderInfo() {
+    const dow = weekday(date);
+    let notice = '';
+    if (holiday) notice = `Libur: ${holiday}`;
+    else if (dow === 0 || dow === 6) notice = 'Akhir pekan';
+    q('#a-info').innerHTML = `
+      <p class="text-sm font-medium text-slate-900">${esc(fmtDate(date))}${date === maxDate ? ' <span class="ml-1 rounded-full bg-indigo-50 px-2 py-0.5 text-xs font-medium text-indigo-700">Hari ini</span>' : ''}</p>
+      ${notice ? `<p class="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">${esc(notice)}. Absensi tidak wajib diisi, tapi tetap bisa diinput kalau ada yang masuk.</p>` : ''}`;
+  }
+
+  function renderList() {
+    const list = visible();
+    q('#a-list').innerHTML = list.length
+      ? `<ul class="space-y-3">${list.map(rowHtml).join('')}</ul>`
+      : '<div class="rounded-xl border border-dashed border-slate-300 bg-white p-8 text-center text-sm text-slate-500">Tidak ada karyawan di bagian ini.</div>';
+  }
+
+  function renderDateControls() {
+    q('#a-date').value = date;
+    q('#a-prev').disabled = date <= minDate;
+    q('#a-next').disabled = date >= maxDate;
+  }
+
+  // Simpan (insert atau update) satu / banyak baris sekaligus. Return true kalau berhasil.
+  async function save(rows) {
+    const d = date;
+    const ids = rows.map((r) => r.employee_id);
+    ids.forEach((id) => pending.add(id));
+    ids.forEach(updateRow);
+    q('#a-all').disabled = true;
+
+    const { data, error } = await supabase
+      .from('attendances')
+      .upsert(rows, { onConflict: 'employee_id,work_date' })
+      .select(ATT_COLS);
+
+    ids.forEach((id) => pending.delete(id));
+    if (d !== date) return false; // user sudah pindah tanggal, jangan timpa tampilan
+    q('#a-all').disabled = false;
+    if (error || !data) {
+      console.error(error);
+      toast(dbMessage(error, ATT_ERR), 'error');
+      ids.forEach(updateRow);
+      return false;
+    }
+    data.forEach((r) => att.set(r.employee_id, normRec(r)));
+    ids.forEach(updateRow);
+    renderSummary();
+    return true;
+  }
+
+  const payload = (empId, r) => ({
+    employee_id: empId,
+    work_date: date,
+    status: r.status,
+    check_in: r.status === 'hadir' ? r.check_in : null,
+    check_out: r.status === 'hadir' ? r.check_out || null : null,
+    note: r.note ?? null,
+  });
+
+  async function setStatus(empId, status) {
+    if (pending.has(empId)) return;
+    const cur = att.get(empId);
+    if (cur?.status === status) return;
+    await save([payload(empId, { status, check_in: cur?.check_in || settings.work_start, check_out: cur?.check_out, note: cur?.note })]);
+  }
+
+  async function setTime(empId, field, value) {
+    const cur = att.get(empId);
+    if (!cur || cur.status !== 'hadir' || pending.has(empId)) return;
+    const next = { ...cur, [field]: value };
+    if (!next.check_in) {
+      toast('Jam masuk wajib diisi.', 'error');
+      return updateRow(empId);
+    }
+    if (next.check_out && next.check_out < next.check_in) {
+      toast('Jam pulang tidak boleh lebih awal dari jam masuk.', 'error');
+      return updateRow(empId);
+    }
+    if (next.check_in === cur.check_in && (next.check_out || '') === (cur.check_out || '')) return;
+    await save([payload(empId, next)]);
+  }
+
+  async function setNote(empId, value) {
+    const cur = att.get(empId);
+    const note = value.trim() || null;
+    if (!cur || pending.has(empId) || note === (cur.note ?? null)) return;
+    await save([payload(empId, { ...cur, note })]);
+  }
+
+  async function clearRecord(empId) {
+    const emp = emps.find((e) => e.id === empId);
+    if (!emp || pending.has(empId)) return;
+    const ok = await confirmDialog({
+      title: 'Kosongkan absensi?',
+      message: `Absensi ${emp.full_name} pada ${fmtDate(date)} akan dihapus (kembali ke "Belum diisi").`,
+      confirmLabel: 'Kosongkan',
+      danger: true,
+    });
+    if (!ok) return;
+    const d = date;
+    const { data, error } = await supabase
+      .from('attendances')
+      .delete()
+      .eq('employee_id', empId)
+      .eq('work_date', d)
+      .select('id');
+    if (d !== date) return;
+    if (error || !data || data.length === 0) {
+      console.error(error);
+      toast(dbMessage(error, ATT_ERR), 'error');
+      return;
+    }
+    att.delete(empId);
+    updateRow(empId);
+    renderSummary();
+  }
+
+  // Hanya mengisi yang BELUM punya data (tidak menimpa izin/sakit yang sudah diinput)
+  async function markAllPresent() {
+    const targets = visible().filter((e) => !att.has(e.id) && !pending.has(e.id));
+    if (!targets.length) return toast('Semua sudah terisi.');
+    const ok = await save(
+      targets.map((e) => payload(e.id, { status: 'hadir', check_in: settings.work_start, check_out: null, note: null })),
+    );
+    if (ok) toast(`${targets.length} karyawan ditandai hadir (jam masuk ${settings.work_start}).`, 'success');
+  }
+
+  async function loadDate() {
+    const d = date;
+    q('#a-list').innerHTML = '<p class="py-10 text-center text-sm text-slate-400">Memuat…</p>';
+    const [a, h] = await Promise.all([
+      supabase.from('attendances').select(ATT_COLS).eq('work_date', d),
+      supabase.from('holidays').select('name').eq('holiday_date', d).maybeSingle(),
+    ]);
+    if (d !== date) return;
+    renderInfo();
+    if (a.error) {
+      console.error(a.error);
+      q('#a-list').innerHTML = errBox('Gagal memuat absensi.');
+      q('#a-list [data-act="retry"]').addEventListener('click', loadDate);
+      return;
+    }
+    holiday = h.error ? null : (h.data?.name ?? null); // data libur gagal dimuat tidak fatal
+    renderInfo();
+    att = new Map((a.data ?? []).map((r) => [r.employee_id, normRec(r)]));
+    renderSummary();
+    renderList();
+  }
+
+  function goDate(next) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(next)) return renderDateControls();
+    date = next < minDate ? minDate : next > maxDate ? maxDate : next;
+    renderDateControls();
+    loadDate();
+  }
+
+  async function init() {
+    body.innerHTML = '<p class="py-10 text-center text-sm text-slate-400">Memuat…</p>';
+    const [d, e, s] = await Promise.all([
+      supabase.from('departments').select('id, name').eq('leader_id', leaderId).order('name'),
+      supabase.from('employees').select('id, nip, full_name, department_id').eq('leader_id', leaderId).eq('is_active', true).order('full_name'),
+      supabase.from('leader_settings').select('work_start, work_end, late_tolerance_minutes').eq('leader_id', leaderId).maybeSingle(),
+    ]);
+    if (d.error || e.error || s.error) {
+      console.error(d.error || e.error || s.error);
+      body.innerHTML = errBox('Gagal memuat data absensi.');
+      body.querySelector('[data-act="retry"]').addEventListener('click', init);
+      return;
+    }
+    depts = d.data ?? [];
+    emps = e.data ?? [];
+    if (s.data) {
+      settings = { work_start: hhmm(s.data.work_start), work_end: hhmm(s.data.work_end), late_tolerance_minutes: s.data.late_tolerance_minutes };
+    }
+
+    if (!emps.length) {
+      body.innerHTML = `
+        <div class="rounded-xl border border-dashed border-slate-300 bg-white p-8 text-center">
+          <p class="text-sm font-medium text-slate-900">Belum ada karyawan aktif</p>
+          <p class="mt-1 text-sm text-slate-500">Tambahkan karyawan dulu supaya absensi bisa diisi.</p>
+          <a href="#/karyawan" class="${BTN_PRIMARY} mt-4 inline-block">Ke menu Karyawan</a>
+        </div>`;
+      return;
+    }
+
+    body.innerHTML = `
+      <div class="mb-4 space-y-3">
+        <div class="flex items-center gap-2">
+          <button type="button" id="a-prev" aria-label="Hari sebelumnya" class="${BTN_SM} shrink-0 !px-2.5 !py-2.5">${icon('chevron-left', 'size-5')}</button>
+          <input id="a-date" type="date" min="${minDate}" max="${maxDate}" value="${date}" aria-label="Tanggal absensi" class="${INPUT}">
+          <button type="button" id="a-next" aria-label="Hari berikutnya" class="${BTN_SM} shrink-0 !px-2.5 !py-2.5">${icon('chevron-right', 'size-5')}</button>
+        </div>
+        <div id="a-info"></div>
+        <div id="a-summary" class="grid grid-cols-3 gap-2 sm:grid-cols-6"></div>
+        <div id="a-chips" role="group" aria-label="Filter bagian"
+             class="-mx-4 flex gap-2 overflow-x-auto px-4 pb-1 md:mx-0 md:flex-wrap md:overflow-visible md:px-0"></div>
+        <div class="flex items-center justify-between gap-3">
+          <p id="a-count" class="text-xs text-slate-500"></p>
+          <button type="button" id="a-all" class="${BTN_PRIMARY} disabled:cursor-not-allowed disabled:opacity-60">Hadir semua</button>
+        </div>
+      </div>
+      <div id="a-list" aria-live="polite"></div>`;
+
+    q('#a-prev').addEventListener('click', () => goDate(addDays(date, -1)));
+    q('#a-next').addEventListener('click', () => goDate(addDays(date, 1)));
+    q('#a-date').addEventListener('change', (ev) => goDate(ev.target.value));
+    q('#a-all').addEventListener('click', markAllPresent);
+    q('#a-chips').addEventListener('click', (ev) => {
+      const b = ev.target.closest('[data-dept]');
+      if (!b) return;
+      f.dept = b.dataset.dept;
+      renderChips();
+      renderList();
+      renderSummary();
+    });
+    q('#a-list').addEventListener('click', (ev) => {
+      const li = ev.target.closest('li[data-emp]');
+      if (!li) return;
+      const st = ev.target.closest('[data-status]');
+      if (st) return setStatus(li.dataset.emp, st.dataset.status);
+      if (ev.target.closest('[data-clear]')) clearRecord(li.dataset.emp);
+    });
+    q('#a-list').addEventListener('change', (ev) => {
+      const el = ev.target;
+      const li = el.closest('li[data-emp]');
+      if (!li) return;
+      if (el.dataset.field === 'check_in' || el.dataset.field === 'check_out') setTime(li.dataset.emp, el.dataset.field, el.value);
+      else if (el.dataset.field === 'note') setNote(li.dataset.emp, el.value);
+    });
+
+    renderChips();
+    renderDateControls();
+    await loadDate();
+  }
+
+  await init();
+}
+
+async function pagePengaturan(view, ctx) {
+  const leaderId = ctx.profile.id;
+  view.innerHTML = '<div id="s-body" class="mx-auto max-w-lg"></div>';
+  const body = view.querySelector('#s-body');
+
+  function renderForm(s) {
+    body.innerHTML = `
+      <form id="s-form" novalidate class="space-y-5 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label for="s-start" class="${LABEL}">Jam masuk</label>
+            <input id="s-start" name="work_start" type="time" value="${esc(hhmm(s.work_start))}" class="${INPUT}">
+          </div>
+          <div>
+            <label for="s-end" class="${LABEL}">Jam pulang</label>
+            <input id="s-end" name="work_end" type="time" value="${esc(hhmm(s.work_end))}" class="${INPUT}">
+          </div>
+        </div>
+        <div>
+          <label for="s-tol" class="${LABEL}">Toleransi keterlambatan (menit)</label>
+          <input id="s-tol" name="tol" type="number" inputmode="numeric" min="0" max="120" step="1" value="${esc(s.late_tolerance_minutes)}" class="${INPUT}">
+          <p class="mt-1.5 text-xs text-slate-500">
+            Keterlambatan = selisih jam masuk karyawan dengan jam masuk standar, dikurangi toleransi.
+            Contoh: standar 08:00, toleransi 10 menit, karyawan masuk 08:15 → terlambat 5 menit.
+          </p>
+        </div>
+        <p class="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
+          Perubahan berlaku untuk absensi yang diinput setelah ini. Absensi yang sudah tersimpan tidak berubah.
+        </p>
+        <p data-error role="alert" class="hidden rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700"></p>
+        <button type="submit" class="${SUBMIT_CLS}">Simpan pengaturan</button>
+      </form>`;
+
+    const form = body.querySelector('#s-form');
+    const errEl = form.querySelector('[data-error]');
+    const btn = form.querySelector('[type="submit"]');
+    const setError = (m) => { errEl.textContent = m; errEl.classList.toggle('hidden', !m); };
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (btn.disabled) return;
+      const work_start = form.elements.work_start.value;
+      const work_end = form.elements.work_end.value;
+      const tolRaw = form.elements.tol.value.trim();
+      const tol = Number(tolRaw);
+
+      if (!work_start || !work_end) return setError('Jam masuk dan jam pulang wajib diisi.');
+      if (work_end <= work_start) return setError('Jam pulang harus lebih akhir dari jam masuk.');
+      if (tolRaw === '' || !Number.isInteger(tol) || tol < 0 || tol > 120) return setError('Toleransi harus bilangan bulat 0 sampai 120 menit.');
+
+      setError('');
+      btn.disabled = true;
+      btn.textContent = 'Menyimpan…';
+      const { data, error } = await supabase
+        .from('leader_settings')
+        .update({ work_start, work_end, late_tolerance_minutes: tol })
+        .eq('leader_id', leaderId)
+        .select('leader_id');
+      btn.disabled = false;
+      btn.textContent = 'Simpan pengaturan';
+      if (error || !data || data.length === 0) {
+        console.error(error);
+        setError(dbMessage(error, { '23514': 'Nilai tidak valid. Pastikan jam pulang setelah jam masuk dan toleransi 0-120 menit.' }));
+        return;
+      }
+      toast('Pengaturan disimpan.', 'success');
+    });
+  }
+
+  async function load() {
+    body.innerHTML = '<p class="py-10 text-center text-sm text-slate-400">Memuat…</p>';
+    const { data, error } = await supabase
+      .from('leader_settings')
+      .select('work_start, work_end, late_tolerance_minutes')
+      .eq('leader_id', leaderId)
+      .maybeSingle();
+    if (error) {
+      console.error(error);
+      body.innerHTML = errBox('Gagal memuat pengaturan.');
+      body.querySelector('[data-act="retry"]').addEventListener('click', load);
+      return;
+    }
+    if (!data) {
+      body.innerHTML = errBox('Pengaturan belum tersedia untuk akun ini. Hubungi super admin.', false);
+      return;
+    }
+    renderForm(data);
+  }
+
+  await load();
+}
+
 /* ============================== 7. LAYOUT ============================== */
 // Mobile: header atas + bottom nav. Desktop (md+): sidebar kiri.
 const ROLE_LABEL = { super_admin: 'Super Admin', leader: 'Leader' };
@@ -1222,11 +1704,11 @@ function renderShell(root, { profile, items, onLogout }) {
 // Akses data yang sebenarnya tetap dijaga RLS di database, ini hanya mengatur tampilan.
 const ROUTES = {
   leader: [
-    { path: '/absensi', label: 'Absensi', icon: 'check', render: stubPage('Absensi', 'Input absensi harian anggota tim.') },
+    { path: '/absensi', label: 'Absensi', icon: 'check', render: pageAbsensi },
     { path: '/karyawan', label: 'Karyawan', icon: 'user', render: pageKaryawan },
     { path: '/bagian', label: 'Bagian', icon: 'grid', render: pageBagian },
     { path: '/report', label: 'Report', icon: 'chart', render: stubPage('Report', 'Report absensi bulanan, export Excel dan PDF.') },
-    { path: '/pengaturan', label: 'Pengaturan', icon: 'sliders', render: stubPage('Pengaturan', 'Jam kerja dan toleransi keterlambatan.') },
+    { path: '/pengaturan', label: 'Pengaturan', icon: 'sliders', render: pagePengaturan },
   ],
   super_admin: [
     { path: '/leader', label: 'Leader', icon: 'users', render: pageLeader },
